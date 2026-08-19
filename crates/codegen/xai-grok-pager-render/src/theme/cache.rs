@@ -45,6 +45,7 @@ fn theme_kind_from_u8(byte: u8) -> ThemeKind {
     match byte {
         x if x == ThemeKind::GrokNight as u8 => ThemeKind::GrokNight,
         x if x == ThemeKind::GrokDay as u8 => ThemeKind::GrokDay,
+        x if x == ThemeKind::GrokDayWhite as u8 => ThemeKind::GrokDayWhite,
         x if x == ThemeKind::TokyoNight as u8 => ThemeKind::TokyoNight,
         x if x == ThemeKind::RosePineMoon as u8 => ThemeKind::RosePineMoon,
         x if x == ThemeKind::OscuraMidnight as u8 => ThemeKind::OscuraMidnight,

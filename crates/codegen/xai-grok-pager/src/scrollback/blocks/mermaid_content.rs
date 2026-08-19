@@ -143,14 +143,14 @@ pub fn mermaid_block_ranges(view: &MarkdownRenderView) -> Vec<Range<usize>> {
 
 /// Whether a theme renders diagrams on a dark surface.
 ///
-/// `GrokDay` is the only light theme; every other concrete theme (and the
-/// `GrokNight` default that `Auto` resolves to before it reaches the cache) is
-/// dark. The render worker maps this to `xai_grok_mermaid::MermaidTheme`; it
-/// lives here (rather than referencing the engine crate) so the
-/// always-compiled detection module stays independent of the optional
-/// `mermaid` feature.
+/// `GrokDay` and `GrokDayWhite` are the light themes; every other concrete
+/// theme (and the `GrokNight` default that `Auto` resolves to before it
+/// reaches the cache) is dark. The render worker maps this to
+/// `xai_grok_mermaid::MermaidTheme`; it lives here (rather than referencing
+/// the engine crate) so the always-compiled detection module stays independent
+/// of the optional `mermaid` feature.
 pub fn theme_is_dark(theme: ThemeKind) -> bool {
-    !matches!(theme, ThemeKind::GrokDay)
+    !matches!(theme, ThemeKind::GrokDay | ThemeKind::GrokDayWhite)
 }
 
 /// Cache key for a rendered diagram: content hash + theme + quality tier +
@@ -828,7 +828,11 @@ mod tests {
     fn theme_is_dark_maps_grokday_to_light_only() {
         assert!(
             !theme_is_dark(ThemeKind::GrokDay),
-            "GrokDay is the light theme"
+            "GrokDay is a light theme"
+        );
+        assert!(
+            !theme_is_dark(ThemeKind::GrokDayWhite),
+            "GrokDayWhite is a light theme"
         );
         for dark in [
             ThemeKind::GrokNight,

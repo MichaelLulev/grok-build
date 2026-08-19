@@ -6,12 +6,13 @@ Grok Build draws all TUI colors from a central theme. You can switch themes whil
 
 ## Available Themes
 
-Grok includes five built-in themes, plus an `auto` option that follows your system appearance:
+Grok includes six built-in themes, plus an `auto` option that follows your system appearance:
 
 | Theme | Config Names | Description | Truecolor Required |
 |-------|-------------|-------------|--------------------|
 | **GrokNight** | `groknight`, `grok-night`, `dark` | Neutral dark base with a magenta accent. Default theme. Survives quantization cleanly on 256-color and 16-color terminals. | No |
 | **GrokDay** | `grokday`, `grok-day`, `light`, `day` | Light theme for bright terminal backgrounds. | No |
+| **GrokDay White** | `grokday-white`, `grok-day-white` | Grok Day on a white canvas. Survives quantization cleanly on 256-color and 16-color terminals. | No |
 | **TokyoNight** | `tokyonight`, `tokyo-night`, `tokyo` | Dark, blue-tinted backgrounds from the Tokyo Night palette. Loses its character when quantized. | Yes |
 | **RosePineMoon** | `rosepine`, `rose-pine`, `rosepine-moon`, `rose-pine-moon` | Muted dark palette with mauve accents, from the Rosé Pine family. | Yes |
 | **OscuraMidnight** | `oscura`, `oscura-midnight` | Deep dark base with purple accents. | Yes |
@@ -112,7 +113,7 @@ Every theme is defined using full RGB values. At startup, Grok quantizes all col
 - On **256-color** terminals, each RGB value is mapped to the nearest indexed palette entry.
 - On **16-color** terminals, colors map to ANSI names.
 
-GrokNight and GrokDay use neutral grays that quantize cleanly. TokyoNight, RosePineMoon, and OscuraMidnight use distinctive tinted backgrounds that lose their character when quantized, which is why the theme picker hides them on non-truecolor terminals.
+GrokNight, GrokDay, and GrokDay White use neutral grays that quantize cleanly. TokyoNight, RosePineMoon, and OscuraMidnight use distinctive tinted backgrounds that lose their character when quantized, which is why the theme picker hides them on non-truecolor terminals.
 
 ### Runtime-Generated Colors
 
@@ -150,7 +151,7 @@ Use compact mode on small screens to maximize content area.
 Grok bundles three `.tmTheme` files for code-block syntax highlighting and selects one based on the active theme:
 
 - `grok-night.tmTheme` -- GrokNight, RosePineMoon, and OscuraMidnight
-- `grok-day.tmTheme` -- GrokDay
+- `grok-day.tmTheme` -- GrokDay and GrokDay White
 - `tokyo-night.tmTheme` -- TokyoNight
 
 Grok selects the matching file automatically when you switch themes. The `.tmTheme` files are built into the binary, so you cannot replace them with your own.

@@ -688,7 +688,7 @@ fn json_empty_fixture_pins_null_policy() {
                 "color": {
                     "level": {"status": "unavailable", "value": null},
                     "availableThemes": [],
-                    "totalThemes": 5
+                    "totalThemes": 6
                 },
                 "keyboard": null,
                 "newline": null,
@@ -736,7 +736,7 @@ fn json_contract_is_structural_stable_ordered_and_ansi_free() {
                 "color": {
                     "level": {"status": "available", "value": "256"},
                     "availableThemes": ["groknight", "grokday"],
-                    "totalThemes": 5
+                    "totalThemes": 6
                 },
                 "keyboard": {"cmd": "dropped", "opt": "native", "os": "macos"},
                 "newline": {"kind": "xterm_js", "terminalName": "cursor"},

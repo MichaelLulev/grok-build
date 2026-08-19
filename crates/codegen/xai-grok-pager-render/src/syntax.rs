@@ -152,7 +152,7 @@ pub fn get_syntect() -> &'static Syntect {
             .get_or_init(|| Syntect::new(include_bytes!("../assets/grok-night.tmTheme"))),
         ThemeKind::TokyoNight => SYNTECT_TOKYONIGHT
             .get_or_init(|| Syntect::new(include_bytes!("../assets/tokyo-night.tmTheme"))),
-        ThemeKind::GrokDay => SYNTECT_GROKDAY
+        ThemeKind::GrokDay | ThemeKind::GrokDayWhite => SYNTECT_GROKDAY
             .get_or_init(|| Syntect::new(include_bytes!("../assets/grok-day.tmTheme"))),
     }
 }

@@ -56,6 +56,11 @@ const THEME_CHOICES: &[EnumChoice] = &[
         description: "Light theme for bright environments.",
     },
     EnumChoice {
+        canonical: "grokday-white",
+        display: "Grok Day White",
+        description: "Grok Day on a white canvas.",
+    },
+    EnumChoice {
         canonical: "tokyonight",
         display: "Tokyo Night",
         description: "Dark + blue-tinted; needs truecolor.",
@@ -502,6 +507,11 @@ const CONCRETE_THEME_CHOICES: &[EnumChoice] = &[
         canonical: "grokday",
         display: "Grok Day",
         description: "Light theme for bright environments.",
+    },
+    EnumChoice {
+        canonical: "grokday-white",
+        display: "Grok Day White",
+        description: "Grok Day on a white canvas.",
     },
     EnumChoice {
         canonical: "tokyonight",

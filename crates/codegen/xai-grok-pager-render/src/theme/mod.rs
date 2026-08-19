@@ -14,6 +14,7 @@ pub mod cache;
 pub mod color_support;
 pub mod env_appearance;
 mod grokday;
+mod grokday_white;
 mod groknight;
 pub mod md_style;
 pub mod osc11;
@@ -34,6 +35,7 @@ pub enum ThemeKind {
     TokyoNight = 2,
     RosePineMoon = 3,
     OscuraMidnight = 5,
+    GrokDayWhite = 6,
     /// Meta-variant: follow system dark/light appearance.
     ///
     /// Never stored in `cache::CURRENT` — resolved to a concrete
@@ -49,6 +51,7 @@ impl ThemeKind {
     pub const ALL: &[ThemeKind] = &[
         ThemeKind::GrokNight,
         ThemeKind::GrokDay,
+        ThemeKind::GrokDayWhite,
         ThemeKind::TokyoNight,
         ThemeKind::RosePineMoon,
         ThemeKind::OscuraMidnight,
@@ -62,7 +65,11 @@ impl ThemeKind {
         // Two possible results — pick the right const slice based on
         // the detected color level. No heap allocation needed.
         const ALL: &[ThemeKind] = ThemeKind::ALL;
-        const NO_TRUECOLOR: &[ThemeKind] = &[ThemeKind::GrokNight, ThemeKind::GrokDay];
+        const NO_TRUECOLOR: &[ThemeKind] = &[
+            ThemeKind::GrokNight,
+            ThemeKind::GrokDay,
+            ThemeKind::GrokDayWhite,
+        ];
 
         if color_support::detect().has_truecolor() {
             ALL
@@ -77,6 +84,7 @@ impl ThemeKind {
             Self::GrokNight => "groknight",
             Self::TokyoNight => "tokyonight",
             Self::GrokDay => "grokday",
+            Self::GrokDayWhite => "grokday-white",
             Self::RosePineMoon => "rosepine-moon",
             Self::OscuraMidnight => "oscura-midnight",
             Self::Auto => "auto",
@@ -93,6 +101,7 @@ impl ThemeKind {
             Self::GrokNight => false,
             Self::TokyoNight => true,
             Self::GrokDay => false,
+            Self::GrokDayWhite => false,
             Self::RosePineMoon => true,
             Self::OscuraMidnight => true,
             // Auto is resolved to a concrete theme before rendering.
@@ -109,6 +118,7 @@ impl ThemeKind {
             "groknight" | "grok-night" | "dark" => Some(Self::GrokNight),
             "tokyonight" | "tokyo-night" | "tokyo" => Some(Self::TokyoNight),
             "grokday" | "grok-day" | "light" | "day" => Some(Self::GrokDay),
+            "grokday-white" | "grok-day-white" => Some(Self::GrokDayWhite),
             "rosepine" | "rose-pine" | "rosepine-moon" | "rose-pine-moon" => {
                 Some(Self::RosePineMoon)
             }
@@ -146,6 +156,7 @@ pub fn display_name_for_canonical(value: &str) -> &str {
         "auto" => "Auto",
         "groknight" => "Grok Night",
         "grokday" => "Grok Day",
+        "grokday-white" => "Grok Day White",
         "tokyonight" => "Tokyo Night",
         "rosepine-moon" => "Rose Pine Moon",
         other => other,
@@ -272,6 +283,7 @@ impl Theme {
             ThemeKind::GrokNight => Self::groknight(),
             ThemeKind::TokyoNight => Self::tokyonight(),
             ThemeKind::GrokDay => Self::grokday(),
+            ThemeKind::GrokDayWhite => Self::grokday_white(),
             ThemeKind::RosePineMoon => Self::rosepine_moon(),
             ThemeKind::OscuraMidnight => Self::oscura_midnight(),
             // Auto is resolved to a concrete theme before being stored;
@@ -703,6 +715,7 @@ mod tests {
     fn is_auto_returns_false_for_concrete_variants() {
         assert!(!ThemeKind::GrokNight.is_auto());
         assert!(!ThemeKind::GrokDay.is_auto());
+        assert!(!ThemeKind::GrokDayWhite.is_auto());
         assert!(!ThemeKind::TokyoNight.is_auto());
         assert!(!ThemeKind::RosePineMoon.is_auto());
         assert!(!ThemeKind::OscuraMidnight.is_auto());
@@ -726,6 +739,7 @@ mod tests {
         assert!(Theme::rosepine_moon().is_dark());
         assert!(Theme::oscura_midnight().is_dark());
         assert!(!Theme::grokday().is_dark());
+        assert!(!Theme::grokday_white().is_dark());
     }
 
     #[test]
@@ -1060,6 +1074,7 @@ mod tests {
             let theme = match kind {
                 ThemeKind::GrokNight => Theme::groknight(),
                 ThemeKind::GrokDay => Theme::grokday(),
+                ThemeKind::GrokDayWhite => Theme::grokday_white(),
                 ThemeKind::TokyoNight => Theme::tokyonight(),
                 ThemeKind::RosePineMoon => Theme::rosepine_moon(),
                 ThemeKind::OscuraMidnight => Theme::oscura_midnight(),
@@ -1196,6 +1211,14 @@ mod tests {
         assert_eq!(ThemeKind::from_name("grokday"), Some(ThemeKind::GrokDay));
         assert_eq!(ThemeKind::from_name("light"), Some(ThemeKind::GrokDay));
         assert_eq!(
+            ThemeKind::from_name("grokday-white"),
+            Some(ThemeKind::GrokDayWhite)
+        );
+        assert_eq!(
+            ThemeKind::from_name("grok-day-white"),
+            Some(ThemeKind::GrokDayWhite)
+        );
+        assert_eq!(
             ThemeKind::from_name("tokyonight"),
             Some(ThemeKind::TokyoNight)
         );
@@ -1230,6 +1253,8 @@ mod tests {
             ("grok-day", ThemeKind::GrokDay),
             ("light", ThemeKind::GrokDay),
             ("day", ThemeKind::GrokDay),
+            ("grokday-white", ThemeKind::GrokDayWhite),
+            ("grok-day-white", ThemeKind::GrokDayWhite),
             ("rosepine", ThemeKind::RosePineMoon),
             ("rose-pine", ThemeKind::RosePineMoon),
             ("rosepine-moon", ThemeKind::RosePineMoon),

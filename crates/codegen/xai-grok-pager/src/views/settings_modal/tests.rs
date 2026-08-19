@@ -7159,6 +7159,7 @@ fn max_thoughts_width_preview_title_styling_distinguishes_from_content() {
         crate::theme::ThemeKind::GrokNight => crate::theme::Theme::groknight(),
         crate::theme::ThemeKind::TokyoNight => crate::theme::Theme::tokyonight(),
         crate::theme::ThemeKind::GrokDay => crate::theme::Theme::grokday(),
+        crate::theme::ThemeKind::GrokDayWhite => crate::theme::Theme::grokday_white(),
         crate::theme::ThemeKind::RosePineMoon => crate::theme::Theme::rosepine_moon(),
         // Resolved via `Theme::current()` rather than a constructor
         // because `theme::oscura` is a private module.
