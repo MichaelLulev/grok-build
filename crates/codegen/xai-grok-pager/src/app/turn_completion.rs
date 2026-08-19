@@ -231,6 +231,27 @@ fn arm_driver_turn_end_reconcile(
     true
 }
 
+/// Context-window occupancy at marker time, or `None` when unknown or empty
+/// so the "Worked for" line stays time-only.
+pub(super) fn context_tokens_used(agent: &AgentView) -> Option<u64> {
+    agent
+        .context_state
+        .as_ref()
+        .map(|c| c.used)
+        .filter(|used| *used > 0)
+}
+
+/// Successful-turn marker: elapsed plus context occupancy when known.
+pub(super) fn turn_completed_event(
+    agent: &AgentView,
+    elapsed: Option<std::time::Duration>,
+) -> SessionEvent {
+    SessionEvent::TurnCompleted {
+        elapsed,
+        tokens: context_tokens_used(agent),
+    }
+}
+
 /// Formatted `TurnFailed` marker for an errored turn, or `None` when a
 /// dedicated banner (re-auth, overflow, disk-full, request-failed) already
 /// covers the failure.
@@ -351,9 +372,7 @@ pub(super) fn finalize_turn_from_terminal(
         Some("rate_limit") => None,
         Some("error") => turn_failed_event(&agent.scrollback, agent_result, elapsed),
         // end_turn / max_tokens / max_turn_requests / refusal / unknown → done.
-        _ => Some(SessionEvent::TurnCompleted {
-            elapsed: Some(elapsed),
-        }),
+        _ => Some(turn_completed_event(agent, Some(elapsed))),
     };
     push_turn_terminal_marker(agent, event, ending_prompt_id.as_deref());
 

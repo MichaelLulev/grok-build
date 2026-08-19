@@ -1351,11 +1351,12 @@ pub(super) fn handle_prompt_response(
                 elapsed.unwrap_or_default(),
             )),
             (Ok(_), false) if agent.bash_turn => None,
-            (Ok(_), false) => Some(SessionEvent::TurnCompleted {
+            (Ok(_), false) => Some(crate::app::turn_completion::turn_completed_event(
+                agent,
                 // Legacy copy on purpose: unknown elapsed keeps the "in 0.0s"
                 // form here — only wake markers use the honest `None` form.
-                elapsed: Some(elapsed.unwrap_or_default()),
-            }),
+                Some(elapsed.unwrap_or_default()),
+            )),
             (Err(_), _) if dedicated_ux_shown => None,
             // `err` is already banner-formatted by `format_acp_error` at the
             // producer — the single formatting owner. Don't re-format here.

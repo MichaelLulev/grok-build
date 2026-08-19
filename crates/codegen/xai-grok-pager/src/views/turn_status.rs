@@ -845,7 +845,9 @@ pub use crate::util::format_duration as format_turn_timer;
 /// - 1k-100k: `1.23k`, `10.1k` (with decimal)
 /// - 100k-1m: `100k`, `500k` (whole thousands)
 /// - 1m+: `1.23m`, `10.1m` (with decimal)
-fn format_tokens_short(tokens: u64) -> String {
+///
+/// Shared with the turn-completed marker so occupancy matches live `⇣Nk`.
+pub(crate) fn format_tokens_short(tokens: u64) -> String {
     if tokens < 1000 {
         format!("{tokens}")
     } else if tokens < 100_000 {

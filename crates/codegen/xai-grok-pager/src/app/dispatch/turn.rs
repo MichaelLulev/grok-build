@@ -7,7 +7,6 @@ use crate::app::actions::Effect;
 use crate::app::agent::AgentId;
 use crate::app::agent_view::{ActivePane, AgentView};
 use crate::app::app_view::{ActiveView, AppView};
-use crate::scrollback::blocks::SessionEvent;
 use std::time::Instant;
 
 /// Map `[ui].cancel_subagents_on_turn_cancel` / in-memory agent preference to
@@ -653,9 +652,10 @@ pub(crate) fn reconcile_overdue_turn_ends(app: &mut AppView) -> Option<Vec<Effec
                     pending.agent_result.as_deref(),
                     elapsed,
                 ),
-                _ => Some(SessionEvent::TurnCompleted {
-                    elapsed: Some(elapsed),
-                }),
+                _ => Some(crate::app::turn_completion::turn_completed_event(
+                    agent,
+                    Some(elapsed),
+                )),
             }
         };
         crate::app::turn_completion::push_turn_terminal_marker(

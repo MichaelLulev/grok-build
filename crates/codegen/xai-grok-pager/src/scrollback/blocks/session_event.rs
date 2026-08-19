@@ -36,6 +36,9 @@ pub enum SessionEvent {
         /// wake turn whose deltas carried no `turnStartMs` (old shells)
         /// renders without a duration rather than lying with "0.0s".
         elapsed: Option<Duration>,
+        /// Context-window occupancy at turn end (`context_state.used`).
+        /// `None` when unknown or empty so the marker stays time-only.
+        tokens: Option<u64>,
     },
     /// Agent turn was cancelled by the user.
     TurnCancelled {
@@ -166,12 +169,9 @@ impl SessionEvent {
     pub fn message(&self) -> String {
         match self {
             // Deliberately period-less — don't re-punctuate.
-            SessionEvent::TurnCompleted {
-                elapsed: Some(elapsed),
-            } => {
-                format!("Worked for {}", format_duration(*elapsed))
+            SessionEvent::TurnCompleted { elapsed, tokens } => {
+                turn_completed_message(*elapsed, *tokens)
             }
-            SessionEvent::TurnCompleted { elapsed: None } => "Turn completed.".to_string(),
             SessionEvent::TurnCancelled { elapsed } => {
                 format!("Turn cancelled by user in {}.", format_duration(*elapsed))
             }
@@ -345,6 +345,20 @@ fn format_tokens(tokens: u64) -> String {
         format!("{:.1}k", tokens as f64 / 1000.0)
     } else {
         tokens.to_string()
+    }
+}
+
+fn turn_completed_message(elapsed: Option<Duration>, tokens: Option<u64>) -> String {
+    let tokens = tokens
+        .filter(|t| *t > 0)
+        .map(crate::views::turn_status::format_tokens_short);
+    match (elapsed, tokens) {
+        (Some(elapsed), Some(tokens)) => {
+            format!("Worked for {} · {tokens}", format_duration(elapsed))
+        }
+        (Some(elapsed), None) => format!("Worked for {}", format_duration(elapsed)),
+        (None, Some(tokens)) => format!("Turn completed · {tokens}"),
+        (None, None) => "Turn completed.".to_string(),
     }
 }
 
@@ -696,8 +710,41 @@ mod tests {
     fn turn_completed_message() {
         let event = SessionEvent::TurnCompleted {
             elapsed: Some(Duration::from_secs(125)),
+            tokens: None,
         };
         assert_eq!(event.message(), "Worked for 2m5s");
+    }
+
+    #[test]
+    fn turn_completed_message_includes_context_tokens() {
+        let event = SessionEvent::TurnCompleted {
+            elapsed: Some(Duration::from_secs(12)),
+            tokens: Some(45_000),
+        };
+        assert_eq!(event.message(), "Worked for 12s · 45.0k");
+    }
+
+    #[test]
+    fn turn_completed_tokens_match_live_short_formatter() {
+        let mid = SessionEvent::TurnCompleted {
+            elapsed: Some(Duration::from_secs(12)),
+            tokens: Some(128_000),
+        };
+        assert_eq!(mid.message(), "Worked for 12s · 128k");
+        let large = SessionEvent::TurnCompleted {
+            elapsed: Some(Duration::from_secs(12)),
+            tokens: Some(1_200_000),
+        };
+        assert_eq!(large.message(), "Worked for 12s · 1.20m");
+    }
+
+    #[test]
+    fn turn_completed_message_omits_zero_tokens() {
+        let event = SessionEvent::TurnCompleted {
+            elapsed: Some(Duration::from_secs(2)),
+            tokens: Some(0),
+        };
+        assert_eq!(event.message(), "Worked for 2.0s");
     }
 
     #[test]
@@ -1177,6 +1224,7 @@ mod tests {
     fn non_recap_events_stay_non_interactive() {
         let block = SessionEventBlock::new(SessionEvent::TurnCompleted {
             elapsed: Some(Duration::from_secs(5)),
+            tokens: None,
         });
         assert!(!block.is_foldable());
         assert!(!block.is_selectable());
@@ -1202,6 +1250,7 @@ mod tests {
         SessionEventBlock::with_stop_hooks(
             SessionEvent::TurnCompleted {
                 elapsed: Some(Duration::from_secs(5)),
+                tokens: None,
             },
             vec![stop_group("stop")],
             None,
@@ -1339,6 +1388,7 @@ mod tests {
         let skipped = SessionEventBlock::with_stop_hooks(
             SessionEvent::TurnCompleted {
                 elapsed: Some(Duration::from_secs(5)),
+                tokens: None,
             },
             vec![(
                 "stop".into(),
@@ -1396,6 +1446,7 @@ mod tests {
     fn only_turn_terminal_events_accept_stop_hooks() {
         let settled = SessionEventBlock::new(SessionEvent::TurnCompleted {
             elapsed: Some(Duration::from_secs(24)),
+            tokens: None,
         });
         assert!(settled.event.is_turn_terminal());
         let recap = SessionEventBlock::new(SessionEvent::Recap {

@@ -733,7 +733,10 @@
         let agent = app.agents.get(&AgentId(0)).unwrap();
         assert!(matches!(
             last_session_event(&agent.scrollback),
-            Some(SessionEvent::TurnCompleted { elapsed: None })
+            Some(SessionEvent::TurnCompleted {
+                elapsed: None,
+                ..
+            })
         ));
     }
 

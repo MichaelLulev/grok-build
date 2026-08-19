@@ -572,9 +572,7 @@ pub(crate) fn finalize_finished_child_view(
     child_view
         .scrollback
         .push_block(crate::scrollback::block::RenderBlock::session_event(
-            crate::scrollback::blocks::SessionEvent::TurnCompleted {
-                elapsed: Some(elapsed),
-            },
+            crate::app::turn_completion::turn_completed_event(child_view, Some(elapsed)),
         ));
 }
 fn join_meta_parts(parts: &[Option<&str>]) -> String {
