@@ -235,6 +235,7 @@ mod tests {
             output_byte_limit: DEFAULT_OUTPUT_BYTE_LIMIT,
             stream: false,
             output_file: None,
+            caller_sends_finish: false,
         }
     }
 

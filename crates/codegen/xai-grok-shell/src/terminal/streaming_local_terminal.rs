@@ -601,6 +601,9 @@ impl StreamingLocalTerminalRunner {
                     if let Some(ref mut file) = file_handle {
                         let _ = file.flush().await;
                     }
+                    if truncate_buffer(&mut output_buf, request.output_byte_limit) {
+                        truncated = true;
+                    }
                     return Ok(TerminalRunResult {
                         combined_output: String::from_utf8_lossy(&output_buf).into_owned(),
                         exit_code: None,
@@ -618,6 +621,9 @@ impl StreamingLocalTerminalRunner {
                 // Flush file before returning
                 if let Some(ref mut file) = file_handle {
                     let _ = file.flush().await;
+                }
+                if truncate_buffer(&mut output_buf, request.output_byte_limit) {
+                    truncated = true;
                 }
                 return self
                     .finish_exit(
@@ -715,6 +721,9 @@ impl StreamingLocalTerminalRunner {
                     if let Some(ref mut file) = file_handle {
                         let _ = file.flush().await;
                     }
+                    if truncate_buffer(&mut output_buf, request.output_byte_limit) {
+                        truncated = true;
+                    }
                     return self
                         .finish_timeout(
                             request,
@@ -751,18 +760,20 @@ impl StreamingLocalTerminalRunner {
         };
         finalize_output_state(output_state, exit_notify, output, truncated, &exit_status).await;
 
-        self.send_update(
-            &request.tool_call_id,
-            &request.command,
-            output,
-            -1,
-            truncated,
-            true,
-            None,
-            acp::ToolCallStatus::Failed,
-            request.cwd.as_str(),
-        )
-        .await;
+        if !request.caller_sends_finish {
+            self.send_update(
+                &request.tool_call_id,
+                &request.command,
+                output,
+                -1,
+                truncated,
+                true,
+                None,
+                acp::ToolCallStatus::Failed,
+                request.cwd.as_str(),
+            )
+            .await;
+        }
 
         Ok(TerminalRunResult {
             combined_output: String::from_utf8_lossy(output).into_owned(),
@@ -785,24 +796,26 @@ impl StreamingLocalTerminalRunner {
         let exit_status = extract_exit_status(process_status);
         finalize_output_state(output_state, exit_notify, output, truncated, &exit_status).await;
 
-        let tool_status = if exit_status.exit_code == Some(0) && exit_status.signal.is_none() {
-            acp::ToolCallStatus::Completed
-        } else {
-            acp::ToolCallStatus::Failed
-        };
+        if !request.caller_sends_finish {
+            let tool_status = if exit_status.exit_code == Some(0) && exit_status.signal.is_none() {
+                acp::ToolCallStatus::Completed
+            } else {
+                acp::ToolCallStatus::Failed
+            };
 
-        self.send_update(
-            &request.tool_call_id,
-            &request.command,
-            output,
-            exit_status.exit_code.unwrap_or(-1),
-            truncated,
-            false,
-            exit_status.signal.clone(),
-            tool_status,
-            request.cwd.as_str(),
-        )
-        .await;
+            self.send_update(
+                &request.tool_call_id,
+                &request.command,
+                output,
+                exit_status.exit_code.unwrap_or(-1),
+                truncated,
+                false,
+                exit_status.signal.clone(),
+                tool_status,
+                request.cwd.as_str(),
+            )
+            .await;
+        }
 
         Ok(TerminalRunResult {
             combined_output: String::from_utf8_lossy(output).into_owned(),
@@ -1216,6 +1229,7 @@ mod tests {
             output_byte_limit: DEFAULT_OUTPUT_BYTE_LIMIT,
             stream: true,
             output_file: None,
+            caller_sends_finish: false,
         }
     }
 
@@ -1248,6 +1262,30 @@ mod tests {
         let statuses = extract_statuses(&notifier.notifications.lock().await);
         assert!(statuses.contains(&acp::ToolCallStatus::InProgress));
         assert!(statuses.contains(&acp::ToolCallStatus::Completed));
+    }
+
+    #[tokio::test]
+    async fn caller_sends_finish_skips_terminal_completed() {
+        let session_id = format!("s1-defer-{}", std::process::id());
+        let tool_id = format!("t1-defer-{}", std::process::id());
+
+        let notifier = Arc::new(TestNotifier {
+            notifications: Mutex::new(vec![]),
+        });
+        let runner = StreamingLocalTerminalRunner {
+            notifier: notifier.clone(),
+            session_id: acp::SessionId::new(session_id),
+        };
+
+        let mut request = make_request(&tool_id, "echo ok");
+        request.caller_sends_finish = true;
+        let result = runner.run(request).await.unwrap();
+
+        assert_eq!(result.combined_output.trim(), "ok");
+        let statuses = extract_statuses(&notifier.notifications.lock().await);
+        assert!(statuses.contains(&acp::ToolCallStatus::InProgress));
+        assert!(!statuses.contains(&acp::ToolCallStatus::Completed));
+        assert!(!statuses.contains(&acp::ToolCallStatus::Failed));
     }
 
     #[tokio::test]

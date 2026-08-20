@@ -28,6 +28,10 @@ pub struct TerminalRunRequest {
     /// When Some, the streaming loop writes output to this file as it arrives.
     /// This allows retrieval of full output even after in-memory buffer is truncated.
     pub output_file: Option<PathBuf>,
+    /// When true, the runner only sends `InProgress` stream updates. The
+    /// caller sends the terminal `Completed`/`Failed` (so a post-run cap
+    /// and log footer are not orphaned by the pager).
+    pub caller_sends_finish: bool,
 }
 
 pub struct TerminalRunResult {

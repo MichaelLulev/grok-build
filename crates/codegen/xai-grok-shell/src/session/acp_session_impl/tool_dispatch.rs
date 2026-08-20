@@ -4,9 +4,64 @@
 
 use super::*;
 
-/// Number of output lines to show in final bash mode output summary
-const BASH_MODE_FINAL_OUTPUT_LINES: usize = 10;
 const BASH_MODE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60 * 60);
+
+/// Last `limit` bytes on a UTF-8 boundary. Same rule as the streaming
+/// runner's `truncate_buffer`, applied at finish so a fast dump cannot skip
+/// the ticker.
+fn keep_last_bytes(s: &str, limit: usize) -> String {
+    if s.len() <= limit {
+        return s.to_string();
+    }
+    let excess = s.len() - limit;
+    let start = s
+        .char_indices()
+        .find(|(i, _)| *i >= excess)
+        .map(|(i, _)| i)
+        .unwrap_or(s.len());
+    s[start..].to_string()
+}
+
+fn bash_mode_truncation_footer(
+    shown_bytes: usize,
+    total_bytes: usize,
+    output_file: Option<&std::path::Path>,
+) -> String {
+    let shown = xai_grok_tools::util::truncate::format_bytes(shown_bytes as u64);
+    let total = xai_grok_tools::util::truncate::format_bytes(total_bytes as u64);
+    match output_file {
+        Some(path) => format!(
+            "[truncated: showing last {shown} of {total} - full output at: {}]",
+            path.display()
+        ),
+        None => format!("[truncated: showing last {shown} of {total}]"),
+    }
+}
+
+/// Chat-history text for `!`: last-N capture plus a log path only when the
+/// log file exists.
+fn bash_mode_chat_message(
+    command: &str,
+    output: &str,
+    exit_code: i32,
+    truncated: bool,
+    output_file: Option<&std::path::Path>,
+    total_bytes: usize,
+) -> String {
+    let body = BashOutput::make_output_for_prompt(output);
+    let mut msg = format!(
+        "I executed a terminal command: `{command}`\n\nOutput:\n```\n{body}\n```\n\n[exit code: {exit_code}]"
+    );
+    if truncated {
+        msg.push_str("\n\n");
+        msg.push_str(&bash_mode_truncation_footer(
+            output.len(),
+            total_bytes,
+            output_file,
+        ));
+    }
+    msg
+}
 
 /// Phase 2: dispatch a tool call through [`WorkspaceOps::call_tool`].
 ///
@@ -256,55 +311,60 @@ impl SessionActor {
         )
         .await;
 
+        let output_file = crate::session::persistence::session_dir(&self.session_info)
+            .join("terminal")
+            .join(format!("{}.log", tool_call_id.0.as_ref()));
+
         let request = TerminalRunRequest {
             tool_call_id: tool_call_id.clone(),
             command: command.clone(),
             cwd: self.tool_context.cwd.clone(),
             env: self.tool_context.session_env.as_ref().clone(),
             timeout: BASH_MODE_TIMEOUT,
-            output_byte_limit: 1_048_576, // 1 MiB
-            stream: true,                 // Enable streaming for bash mode
-            output_file: None,            // No file logging for interactive bash mode
+            output_byte_limit: xai_grok_tools::DEFAULT_TOOL_OUTPUT_CHARS,
+            stream: true,
+            output_file: Some(output_file.clone()),
+            caller_sends_finish: true,
         };
 
         let result = self.tool_context.terminal.run(request).await;
 
-        // Format the output
-        let (output, exit_code, timed_out, signal) = match result {
+        let (output, exit_code, timed_out, signal, runner_truncated) = match result {
             Ok(res) => (
                 res.combined_output,
                 res.exit_code.unwrap_or(-1),
                 res.timed_out,
                 res.signal,
+                res.truncated,
             ),
-            Err(e) => (format!("Error running command: {}", e), -1, false, None),
+            Err(e) => (
+                format!("Error running command: {}", e),
+                -1,
+                false,
+                None,
+                false,
+            ),
         };
 
-        // Create final summary with last N lines
-        // Format: "... (X lines)\nlast\nfew\nlines"
-        let lines: Vec<&str> = output.lines().collect();
-        let total_lines = lines.len();
-        let displayed_output = if total_lines > BASH_MODE_FINAL_OUTPUT_LINES {
-            let start = total_lines - BASH_MODE_FINAL_OUTPUT_LINES;
-            let last_lines = lines[start..].join("\n");
-            format!("... ({} lines)\n{}", total_lines, last_lines)
+        let raw = output.trim_end().to_string();
+        let limit = xai_grok_tools::DEFAULT_TOOL_OUTPUT_CHARS;
+        let log_len = std::fs::metadata(&output_file)
+            .ok()
+            .map(|m| m.len() as usize);
+        let log_path = log_len.is_some().then_some(output_file.as_path());
+        let total_bytes = log_len.unwrap_or(raw.len());
+        let truncated = runner_truncated || raw.len() > limit || total_bytes > limit;
+        let capture = keep_last_bytes(&raw, limit);
+        let tui_output = if truncated {
+            format!(
+                "{capture}\n\n{}",
+                bash_mode_truncation_footer(capture.len(), total_bytes, log_path)
+            )
         } else {
-            output.trim_end().to_string()
+            capture.clone()
         };
 
         let is_backgrounded = signal.as_deref() == Some("backgrounded");
-
-        // Build the final response text with output summary and exit code
-        let mut response_text = displayed_output.clone();
-        if is_backgrounded {
-            response_text.push_str("\n\n[command running in background]");
-        } else if timed_out {
-            response_text.push_str("\n\n[command timed out]");
-        } else if let Some(ref sig) = signal {
-            response_text.push_str(&format!("\n\n[killed by signal {}]", sig));
-        } else {
-            response_text.push_str(&format!("\n\n[exit code: {}]", exit_code));
-        }
 
         // Send final tool call update
         // For backgrounded commands, don't mark as completed/failed - let the background task do that
@@ -315,17 +375,19 @@ impl SessionActor {
                 acp::ToolCallStatus::Failed
             };
             let bash_output = BashOutput {
-                output_for_prompt: BashOutput::make_output_for_prompt(&displayed_output),
-                output: displayed_output.as_bytes().to_vec(),
+                output_for_prompt: BashOutput::make_output_for_prompt(&tui_output),
+                output: tui_output.as_bytes().to_vec(),
                 exit_code,
                 command: command.clone(),
-                truncated: total_lines > BASH_MODE_FINAL_OUTPUT_LINES,
+                truncated,
                 signal: signal.clone(),
                 timed_out,
                 description: None,
                 current_dir: self.tool_context.cwd.to_string(),
-                output_file: String::new(),
-                total_bytes: displayed_output.len(),
+                output_file: log_path
+                    .map(|p| p.to_string_lossy().into_owned())
+                    .unwrap_or_default(),
+                total_bytes,
                 output_delta: None,
                 was_bare_echo: false,
             };
@@ -341,16 +403,13 @@ impl SessionActor {
             .await;
         }
 
-        // NOTE: The redundant AgentMessageChunk summary that was previously
-        // sent here has been removed. The execute block already contains the
-        // full command output — sending it again as an agent message created
-        // a noisy duplicate scrollback entry. Old sessions that have it will
-        // still replay fine; new sessions are cleaner.
-
-        // Build a single user message for chat history that includes command, output, and exit code
-        let user_message = format!(
-            "I executed a terminal command: `{}`\n\nOutput:\n```\n{}\n```\n\n[exit code: {}]",
-            command, displayed_output, exit_code
+        let user_message = bash_mode_chat_message(
+            &command,
+            &capture,
+            exit_code,
+            truncated,
+            log_path,
+            total_bytes,
         );
 
         // Add to chat history as a user message only
@@ -478,5 +537,52 @@ mod tests {
             backend_tool_call_status(None),
             acp::ToolCallStatus::Completed
         );
+    }
+
+    #[test]
+    fn bash_mode_chat_message_omits_log_when_not_truncated() {
+        let msg = bash_mode_chat_message(
+            "echo hi",
+            "hi",
+            0,
+            false,
+            Some(std::path::Path::new("/tmp/out.log")),
+            2,
+        );
+        assert!(msg.contains("echo hi"));
+        assert!(msg.contains("hi"));
+        assert!(msg.contains("[exit code: 0]"));
+        assert!(!msg.contains("truncated"));
+        assert!(!msg.contains("/tmp/out.log"));
+    }
+
+    #[test]
+    fn bash_mode_chat_message_points_at_log_when_truncated() {
+        let msg = bash_mode_chat_message(
+            "seq 10000",
+            "9999\n10000",
+            0,
+            true,
+            Some(std::path::Path::new("/tmp/sess/terminal/bash-mode-1.log")),
+            50_000,
+        );
+        assert!(msg.contains("full output at: /tmp/sess/terminal/bash-mode-1.log"));
+        assert!(msg.contains("truncated"));
+    }
+
+    #[test]
+    fn bash_mode_chat_message_omits_missing_log_path() {
+        let msg = bash_mode_chat_message("seq 10000", "9999\n10000", 0, true, None, 50_000);
+        assert!(msg.contains("truncated"));
+        assert!(!msg.contains("full output at:"));
+    }
+
+    #[test]
+    fn keep_last_bytes_caps_finish_buffer() {
+        let s = "a".repeat(50);
+        let kept = keep_last_bytes(&s, 20);
+        assert_eq!(kept.len(), 20);
+        assert!(s.ends_with(&kept));
+        assert_eq!(keep_last_bytes("hi", 20), "hi");
     }
 }
