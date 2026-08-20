@@ -2325,6 +2325,7 @@ mod tests {
         let marker = state.push_block(RenderBlock::session_event(SessionEvent::TurnCompleted {
             elapsed: Some(std::time::Duration::from_secs(2)),
             tokens: None,
+            window: None,
         }));
         // An unstamped marker can't confirm a stamped batch — refused; an
         // unstamped batch keeps the tail-only heuristic.
@@ -2372,6 +2373,7 @@ mod tests {
                 SessionEvent::TurnCompleted {
                     elapsed: Some(std::time::Duration::from_secs(2)),
                     tokens: None,
+                    window: None,
                 },
                 Vec::new(),
                 Some("pid-new".into()),
@@ -2417,6 +2419,7 @@ mod tests {
                 SessionEvent::TurnCompleted {
                     elapsed: Some(std::time::Duration::from_secs(2)),
                     tokens: None,
+                    window: None,
                 },
                 Vec::new(),
                 Some("pid-new".into()),
@@ -2452,6 +2455,7 @@ mod tests {
                 SessionEvent::TurnCompleted {
                     elapsed: Some(std::time::Duration::from_secs(3)),
                     tokens: None,
+                    window: None,
                 },
                 Vec::new(),
                 Some("pid-newer".into()),

@@ -109,6 +109,7 @@ fn marker_push_consumes_matching_stop_hook_stash() {
         Some(SessionEvent::TurnCompleted {
             elapsed: Some(std::time::Duration::from_secs(2)),
             tokens: None,
+            window: None,
         }),
         Some("p1"),
     );
@@ -137,6 +138,7 @@ fn marker_push_flushes_stale_stash_standalone() {
         Some(SessionEvent::TurnCompleted {
             elapsed: Some(std::time::Duration::from_secs(2)),
             tokens: None,
+            window: None,
         }),
         Some("p2"),
     );
@@ -166,6 +168,7 @@ fn marker_without_ending_pid_flushes_stamped_stash_standalone() {
         Some(SessionEvent::TurnCompleted {
             elapsed: Some(std::time::Duration::from_secs(2)),
             tokens: None,
+            window: None,
         }),
         None,
     );
@@ -703,6 +706,7 @@ fn real_end_marker_stays_plain_with_running_work() {
         Some(SessionEvent::TurnCompleted {
             elapsed: Some(std::time::Duration::from_secs(2)),
             tokens: None,
+            window: None,
         }),
         Some("p1"),
     );
@@ -726,6 +730,7 @@ fn workless_marker_renders_legacy_text() {
         Some(SessionEvent::TurnCompleted {
             elapsed: Some(std::time::Duration::from_secs(2)),
             tokens: None,
+            window: None,
         }),
         Some("p1"),
     );
@@ -741,11 +746,32 @@ fn turn_completed_event_reads_context_occupancy() {
         45_000, 2_000_000,
     ));
     let event = turn_completed_event(&agent, Some(std::time::Duration::from_secs(12)));
-    assert_eq!(event.message(), "Worked for 12s · 45.0k");
+    assert_eq!(event.message(), "Worked for 12s · 45K / 2.0M (2%)");
 
     agent.context_state = Some(xai_grok_shell::session::ContextInfo::from_notification(0, 0));
     let event = turn_completed_event(&agent, Some(std::time::Duration::from_secs(2)));
     assert_eq!(event.message(), "Worked for 2.0s");
+}
+
+#[test]
+fn turn_completed_event_falls_back_to_model_window() {
+    let mut agent = running_driver("p1");
+    agent.context_state = Some(xai_grok_shell::session::ContextInfo::from_notification(
+        45_000, 0,
+    ));
+    agent.session.models.override_context_window(2_000_000);
+    let event = turn_completed_event(&agent, Some(std::time::Duration::from_secs(12)));
+    assert_eq!(event.message(), "Worked for 12s · 45K / 2.0M (2%)");
+}
+
+#[test]
+fn turn_completed_event_used_only_without_window() {
+    let mut agent = running_driver("p1");
+    agent.context_state = Some(xai_grok_shell::session::ContextInfo::from_notification(
+        45_000, 0,
+    ));
+    let event = turn_completed_event(&agent, Some(std::time::Duration::from_secs(12)));
+    assert_eq!(event.message(), "Worked for 12s · 45K");
 }
 
 // ── Send-now cancel marker suppression (viewer finalize rail) ────────
@@ -854,6 +880,7 @@ fn turn_end_after_park_pushes_single_marker() {
         Some(SessionEvent::TurnCompleted {
             elapsed: Some(std::time::Duration::from_secs(5)),
             tokens: None,
+            window: None,
         }),
         Some("p1"),
     );

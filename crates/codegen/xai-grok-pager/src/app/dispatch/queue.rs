@@ -2385,6 +2385,7 @@ mod tests {
             crate::scrollback::blocks::SessionEvent::TurnCompleted {
                 elapsed: Some(std::time::Duration::from_secs(2)),
                 tokens: None,
+                window: None,
             },
         ));
         agent

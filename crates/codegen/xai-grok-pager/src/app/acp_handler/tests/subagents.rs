@@ -369,6 +369,7 @@
                 .push_block(RenderBlock::session_event(SessionEvent::TurnCompleted {
                     elapsed: Some(std::time::Duration::from_secs(1)),
                     tokens: None,
+                    window: None,
                 }));
             child
                 .scrollback

@@ -231,24 +231,34 @@ fn arm_driver_turn_end_reconcile(
     true
 }
 
-/// Context-window occupancy at marker time, or `None` when unknown or empty
-/// so the "Worked for" line stays time-only.
-pub(super) fn context_tokens_used(agent: &AgentView) -> Option<u64> {
-    agent
+/// Context occupancy and window at marker time. Used is `None` when unknown
+/// or empty so the "Worked for" line stays time-only. Window falls back to
+/// the model's context length when the snapshot has no total.
+pub(super) fn context_usage(agent: &AgentView) -> (Option<u64>, Option<u64>) {
+    let used = agent
         .context_state
         .as_ref()
         .map(|c| c.used)
-        .filter(|used| *used > 0)
+        .filter(|u| *u > 0);
+    let window = agent
+        .context_state
+        .as_ref()
+        .and_then(|c| (c.total > 0).then_some(c.total))
+        .or_else(|| agent.session.models.get_context_window())
+        .filter(|w| *w > 0);
+    (used, window)
 }
 
-/// Successful-turn marker: elapsed plus context occupancy when known.
+/// Successful-turn marker: elapsed plus context usage when known.
 pub(super) fn turn_completed_event(
     agent: &AgentView,
     elapsed: Option<std::time::Duration>,
 ) -> SessionEvent {
+    let (tokens, window) = context_usage(agent);
     SessionEvent::TurnCompleted {
         elapsed,
-        tokens: context_tokens_used(agent),
+        tokens,
+        window,
     }
 }
 

@@ -39,6 +39,10 @@ pub enum SessionEvent {
         /// Context-window occupancy at turn end (`context_state.used`).
         /// `None` when unknown or empty so the marker stays time-only.
         tokens: Option<u64>,
+        /// Resolved window at marker time: snapshot `total` when `> 0`, else
+        /// the model's context length. `None` when neither is known; the
+        /// marker then shows used tokens only.
+        window: Option<u64>,
     },
     /// Agent turn was cancelled by the user.
     TurnCancelled {
@@ -169,9 +173,11 @@ impl SessionEvent {
     pub fn message(&self) -> String {
         match self {
             // Deliberately period-less — don't re-punctuate.
-            SessionEvent::TurnCompleted { elapsed, tokens } => {
-                turn_completed_message(*elapsed, *tokens)
-            }
+            SessionEvent::TurnCompleted {
+                elapsed,
+                tokens,
+                window,
+            } => turn_completed_message(*elapsed, *tokens, *window),
             SessionEvent::TurnCancelled { elapsed } => {
                 format!("Turn cancelled by user in {}.", format_duration(*elapsed))
             }
@@ -348,16 +354,34 @@ fn format_tokens(tokens: u64) -> String {
     }
 }
 
-fn turn_completed_message(elapsed: Option<Duration>, tokens: Option<u64>) -> String {
-    let tokens = tokens
-        .filter(|t| *t > 0)
-        .map(crate::views::turn_status::format_tokens_short);
-    match (elapsed, tokens) {
-        (Some(elapsed), Some(tokens)) => {
-            format!("Worked for {} · {tokens}", format_duration(elapsed))
+fn context_usage_suffix(used: Option<u64>, window: Option<u64>) -> Option<String> {
+    let used = used.filter(|t| *t > 0)?;
+    let used_s = crate::views::context_bar::fmt_tokens(used);
+    match window.filter(|w| *w > 0) {
+        Some(total) => {
+            let pct = xai_token_estimation::usage_percentage(used, total);
+            Some(format!(
+                "{used_s} / {} ({:.0}%)",
+                crate::views::context_bar::fmt_tokens(total),
+                pct
+            ))
+        }
+        None => Some(used_s),
+    }
+}
+
+fn turn_completed_message(
+    elapsed: Option<Duration>,
+    tokens: Option<u64>,
+    window: Option<u64>,
+) -> String {
+    let usage = context_usage_suffix(tokens, window);
+    match (elapsed, usage) {
+        (Some(elapsed), Some(usage)) => {
+            format!("Worked for {} · {usage}", format_duration(elapsed))
         }
         (Some(elapsed), None) => format!("Worked for {}", format_duration(elapsed)),
-        (None, Some(tokens)) => format!("Turn completed · {tokens}"),
+        (None, Some(usage)) => format!("Turn completed · {usage}"),
         (None, None) => "Turn completed.".to_string(),
     }
 }
@@ -711,6 +735,7 @@ mod tests {
         let event = SessionEvent::TurnCompleted {
             elapsed: Some(Duration::from_secs(125)),
             tokens: None,
+            window: None,
         };
         assert_eq!(event.message(), "Worked for 2m5s");
     }
@@ -720,22 +745,25 @@ mod tests {
         let event = SessionEvent::TurnCompleted {
             elapsed: Some(Duration::from_secs(12)),
             tokens: Some(45_000),
+            window: Some(2_000_000),
         };
-        assert_eq!(event.message(), "Worked for 12s · 45.0k");
+        assert_eq!(event.message(), "Worked for 12s · 45K / 2.0M (2%)");
     }
 
     #[test]
-    fn turn_completed_tokens_match_live_short_formatter() {
+    fn turn_completed_message_uppercase_and_percent() {
         let mid = SessionEvent::TurnCompleted {
             elapsed: Some(Duration::from_secs(12)),
             tokens: Some(128_000),
+            window: Some(256_000),
         };
-        assert_eq!(mid.message(), "Worked for 12s · 128k");
+        assert_eq!(mid.message(), "Worked for 12s · 128K / 256K (50%)");
         let large = SessionEvent::TurnCompleted {
             elapsed: Some(Duration::from_secs(12)),
             tokens: Some(1_200_000),
+            window: Some(2_000_000),
         };
-        assert_eq!(large.message(), "Worked for 12s · 1.20m");
+        assert_eq!(large.message(), "Worked for 12s · 1.2M / 2.0M (60%)");
     }
 
     #[test]
@@ -743,6 +771,7 @@ mod tests {
         let event = SessionEvent::TurnCompleted {
             elapsed: Some(Duration::from_secs(2)),
             tokens: Some(0),
+            window: Some(2_000_000),
         };
         assert_eq!(event.message(), "Worked for 2.0s");
     }
@@ -1225,6 +1254,7 @@ mod tests {
         let block = SessionEventBlock::new(SessionEvent::TurnCompleted {
             elapsed: Some(Duration::from_secs(5)),
             tokens: None,
+            window: None,
         });
         assert!(!block.is_foldable());
         assert!(!block.is_selectable());
@@ -1251,6 +1281,7 @@ mod tests {
             SessionEvent::TurnCompleted {
                 elapsed: Some(Duration::from_secs(5)),
                 tokens: None,
+                window: None,
             },
             vec![stop_group("stop")],
             None,
@@ -1389,6 +1420,7 @@ mod tests {
             SessionEvent::TurnCompleted {
                 elapsed: Some(Duration::from_secs(5)),
                 tokens: None,
+                window: None,
             },
             vec![(
                 "stop".into(),
@@ -1447,6 +1479,7 @@ mod tests {
         let settled = SessionEventBlock::new(SessionEvent::TurnCompleted {
             elapsed: Some(Duration::from_secs(24)),
             tokens: None,
+            window: None,
         });
         assert!(settled.event.is_turn_terminal());
         let recap = SessionEventBlock::new(SessionEvent::Recap {
