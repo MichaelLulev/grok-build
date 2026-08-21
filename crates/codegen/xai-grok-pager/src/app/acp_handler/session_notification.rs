@@ -73,13 +73,16 @@ pub(crate) fn drop_unexpected_replay(
     meta: &NotificationMeta,
     session_id: &str,
     source: &'static str,
+    record_full_replay: bool,
 ) -> bool {
     if !meta.is_replay {
         agent.late_replay_until = None;
         return false;
     }
     if agent.accepts_replayed_update() {
-        agent.mark_reload_replay_seen();
+        if record_full_replay {
+            agent.mark_reload_replay_seen();
+        }
         return false;
     }
     if agent.unexpected_replay_drops == 0 {
@@ -180,6 +183,7 @@ pub(super) fn handle_session_notification_with_origin(
         &meta,
         session_notif.session_id.0.as_ref(),
         "x.ai/session/update",
+        !matches!(session_notif.update, XaiSessionUpdate::Btw { .. }),
     ) {
         return false;
     }
@@ -1037,6 +1041,23 @@ pub(super) fn handle_session_notification_with_origin(
             } else {
                 false
             }
+        }
+        XaiSessionUpdate::Btw {
+            question,
+            answer,
+            asked_at,
+        } => {
+            use crate::scrollback::block::RenderBlock;
+            use crate::scrollback::blocks::BtwBlock;
+            let entry_id = agent
+                .scrollback
+                .push_block(RenderBlock::Btw(BtwBlock::new(question, answer)));
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(&asked_at)
+                && let Some(entry) = agent.scrollback.get_by_id_mut(entry_id)
+            {
+                entry.created_at = Some(dt.with_timezone(&chrono::Local));
+            }
+            true
         }
         XaiSessionUpdate::ModelAutoSwitched {
             previous_model_id,

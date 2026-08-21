@@ -1469,6 +1469,71 @@ pub(crate) fn filter_rewind_lines(lines: Vec<&str>) -> Vec<&str> {
     filter_rewind_by(lines, |line| rewind_step_for_line(line))
 }
 
+/// Unix seconds from an `updates.jsonl` envelope `timestamp` (integer seconds,
+/// millis, or RFC3339).
+pub(crate) fn jsonl_envelope_timestamp_secs(line: &str) -> Option<i64> {
+    #[derive(serde::Deserialize)]
+    struct TimestampPeek {
+        #[serde(default)]
+        timestamp: Option<serde_json::Value>,
+    }
+    let peek: TimestampPeek = serde_json::from_str(line).ok()?;
+    match peek.timestamp? {
+        serde_json::Value::Number(n) => {
+            let n = n.as_i64()?;
+            Some(if n > 1_000_000_000_000 { n / 1000 } else { n })
+        }
+        serde_json::Value::String(s) => chrono::DateTime::parse_from_rfc3339(&s)
+            .ok()
+            .map(|dt| dt.timestamp()),
+        _ => None,
+    }
+}
+
+/// Inclusive unix-second windows discarded by rewind markers. A `/btw` whose
+/// `asked_at` falls in one of these belonged to a dead branch.
+pub(crate) fn rewind_discarded_time_windows(lines: &[&str]) -> Vec<(i64, i64)> {
+    if !lines.iter().any(|l| l.contains(&*REWIND_MARKER)) {
+        return Vec::new();
+    }
+    let mut kept_ts: Vec<Option<i64>> = Vec::new();
+    let mut prompt_starts: Vec<usize> = Vec::new();
+    let mut tracker = UserRunTurnTracker::new();
+    let mut windows = Vec::new();
+
+    for line in lines {
+        match rewind_step_for_line(line) {
+            RewindStep::Rewind { target } => {
+                let trunc = prompt_starts.get(target).copied().unwrap_or(kept_ts.len());
+                if trunc < kept_ts.len() {
+                    let start = kept_ts[trunc..]
+                        .iter()
+                        .copied()
+                        .flatten()
+                        .min()
+                        .or_else(|| kept_ts[..trunc].iter().copied().flatten().max());
+                    let end = jsonl_envelope_timestamp_secs(line);
+                    if let (Some(start), Some(end)) = (start, end) {
+                        windows.push((start, end));
+                    }
+                }
+                kept_ts.truncate(trunc);
+                prompt_starts.truncate(target);
+                tracker.on_non_user();
+                continue;
+            }
+            RewindStep::UserChunk { prompt_index } => {
+                if tracker.on_user_chunk(prompt_index) {
+                    prompt_starts.push(kept_ts.len());
+                }
+            }
+            RewindStep::Other => tracker.on_non_user(),
+        }
+        kept_ts.push(jsonl_envelope_timestamp_secs(line));
+    }
+    windows
+}
+
 /// Filter rewind dead branches from typed `SessionUpdate` values.
 ///
 /// Typed equivalent of [`filter_rewind_lines`] over the same
@@ -2724,6 +2789,56 @@ mod tests {
         assert!(result[1].contains("resp1"));
         assert!(result[2].contains("replacement"));
         assert!(result[3].contains("resp3"));
+    }
+
+    fn envelope_at(ts: i64, method: &str, session_update_json: &str) -> String {
+        format!(
+            r#"{{"timestamp":{ts},"method":"{method}","params":{{"sessionId":"s","update":{session_update_json}}}}}"#
+        )
+    }
+
+    #[test]
+    fn rewind_discarded_windows_cover_dead_branch() {
+        let u1 = envelope_at(
+            10,
+            "session/update",
+            r#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"first"}}"#,
+        );
+        let a1 = envelope_at(
+            11,
+            "session/update",
+            r#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"resp1"}}"#,
+        );
+        let u2 = envelope_at(
+            20,
+            "session/update",
+            r#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"second"}}"#,
+        );
+        let a2 = envelope_at(
+            21,
+            "session/update",
+            r#"{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"resp2"}}"#,
+        );
+        let rw = envelope_at(
+            25,
+            "_x.ai/session/update",
+            r#"{"sessionUpdate":"rewind_marker","target_prompt_index":1,"created_at":"2024-01-01"}"#,
+        );
+        let u3 = envelope_at(
+            30,
+            "session/update",
+            r#"{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"replacement"}}"#,
+        );
+        let lines = vec![
+            u1.as_str(),
+            a1.as_str(),
+            u2.as_str(),
+            a2.as_str(),
+            rw.as_str(),
+            u3.as_str(),
+        ];
+        let windows = rewind_discarded_time_windows(&lines);
+        assert_eq!(windows, vec![(20, 25)]);
     }
 
     #[test]

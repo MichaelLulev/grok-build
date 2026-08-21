@@ -370,27 +370,25 @@ pub(super) fn dispatch_send_btw(app: &mut AppView, question: String) -> Vec<Effe
         // Composer clearing belongs to the submit funnel: `dispatch_send_prompt_inner` clears it
         // when `consume_input` is set, so draft-preserving callers (palette, edited
         // queue row) keep theirs.
-        let minimal_request_id = if minimal {
-            Some(crate::minimal_api::start_minimal_btw(
-                agent,
-                question.clone(),
-            ))
+        let request_id = if minimal {
+            crate::minimal_api::start_minimal_btw(agent, question.clone())
         } else {
+            let request_id = agent.pin_btw_at_call_site(&question);
             agent.btw_state = Some(crate::views::btw_overlay::BtwOverlayState::Loading {
                 question: question.clone(),
             });
             // Prompt keeps focus while the answer is in flight (panel focuses on Done).
             agent.btw_focused = false;
-            None
+            request_id
         };
-        (session_id, minimal_request_id)
+        (session_id, request_id)
     };
 
     vec![Effect::SendBtw {
         agent_id: id,
         session_id,
         question,
-        minimal_request_id,
+        minimal_request_id: Some(minimal_request_id),
     }]
 }
 
@@ -535,7 +533,14 @@ pub(super) fn handle_btw_response(
     if let Some(agent) = app.agents.get_mut(&agent_id) {
         use crate::views::btw_overlay::BtwOverlayState;
         if let Some(request_id) = minimal_request_id {
-            crate::minimal_api::finish_minimal_btw(agent, request_id, result);
+            if agent.minimal_btw_lifecycle.is_some() {
+                crate::minimal_api::finish_minimal_btw(agent, request_id, result);
+                return vec![];
+            }
+            if agent.pending_btw_request != Some(request_id) {
+                return vec![];
+            }
+        } else {
             return vec![];
         }
         let question = match &agent.btw_state {
@@ -544,13 +549,13 @@ pub(super) fn handle_btw_response(
         };
         match result {
             Ok(response) => {
-                // Answer arrived: show it (until Esc) and focus the panel
-                // so Up/Down scroll it until the user returns to the prompt.
+                agent.fill_pending_btw(&response);
                 agent.btw_state = Some(BtwOverlayState::done(question, response));
                 agent.btw_focused = true;
             }
             Err(error) => {
-                // Error stays until Esc; nothing to scroll, keep prompt focus.
+                // Error stays until Esc; nothing to persist, keep prompt focus.
+                agent.drop_unanswered_btw_pin();
                 agent.btw_state = Some(BtwOverlayState::Error { question, error });
                 agent.btw_focused = false;
             }

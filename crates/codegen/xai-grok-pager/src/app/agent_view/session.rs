@@ -356,6 +356,8 @@ impl AgentView {
             pending_fork_banner: None,
             loading_placeholder_id: None,
             pending_recap_entry: None,
+            pending_btw_entry: None,
+            pending_btw_request: None,
             display_name: None,
             generated_session_title: None,
             title_unpin_committed: false,
@@ -538,6 +540,7 @@ impl AgentView {
         if let Some(rid) = self.pending_recap_entry.take() {
             self.scrollback.remove_entry(rid);
         }
+        self.drop_unanswered_btw_pin();
         self.session.model_switch_pending = false;
         self.pending_adoption_updates.clear();
         let stash = self.take_replay_rebuilt_state();
@@ -810,6 +813,19 @@ impl AgentView {
                     tail.remove_entry(*entry_id);
                 }
             }
+            // Replay /btw is applied onto staging without setting
+            // `saw_replay`, so keep-stash would append a second copy of
+            // pins already in the live transcript.
+            let replayed_btw: Vec<_> = tail
+                .iter_entries()
+                .filter_map(|(id, entry)| {
+                    matches!(entry.block, crate::scrollback::block::RenderBlock::Btw(_))
+                        .then_some(id)
+                })
+                .collect();
+            for id in replayed_btw {
+                tail.remove_entry(id);
+            }
             self.scrollback.append_entries_from(tail);
             self.workflow_blocks.extend(stash.workflow_blocks);
             {
@@ -864,6 +880,7 @@ impl AgentView {
         if let Some(id) = self.pending_recap_entry.take() {
             self.scrollback.remove_entry(id);
         }
+        self.drop_unanswered_btw_pin();
         self.mark_turn_finished();
         self.activity_started_at = None;
         self.last_activity = None;
@@ -2204,6 +2221,13 @@ mod status_window_tests {
         agent.bind_session_id(agent_client_protocol::SessionId::new("s2"));
         assert!(agent.btw_state.is_none());
         assert!(agent.minimal_btw_lifecycle.is_none());
+        assert!(
+            agent
+                .scrollback
+                .iter_entries()
+                .all(|(_, e)| !matches!(e.block, crate::scrollback::block::RenderBlock::Btw(_))),
+            "rebind must drop the unanswered /btw pin"
+        );
         assert!(!crate::minimal_api::finish_minimal_btw(
             &mut agent,
             old_request,

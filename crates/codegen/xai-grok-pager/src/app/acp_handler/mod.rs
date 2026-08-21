@@ -206,6 +206,7 @@ pub(crate) fn handle(msg: AcpClientMessage, app: &mut AppView) -> bool {
                         &meta,
                         notif.request.session_id.0.as_ref(),
                         "session/update",
+                        true,
                     ) {
                         notif.response_tx.send(Ok(())).ok();
                         return false;

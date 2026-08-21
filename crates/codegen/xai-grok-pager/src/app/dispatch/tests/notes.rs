@@ -3,7 +3,18 @@
 use super::*;
 use crate::app::dispatch::{recap_unavailable_toast, scrollback_has_user_messages};
 
-fn send_minimal_btw(app: &mut AppView, question: &str) -> uuid::Uuid {
+fn btw_blocks(agent: &crate::app::agent_view::AgentView) -> Vec<(String, String)> {
+    agent
+        .scrollback
+        .iter_entries()
+        .filter_map(|(_, entry)| match &entry.block {
+            RenderBlock::Btw(block) => Some((block.question.clone(), block.content().text())),
+            _ => None,
+        })
+        .collect()
+}
+
+fn send_btw(app: &mut AppView, question: &str) -> uuid::Uuid {
     match dispatch(Action::SendBtw(question.into()), app).as_slice() {
         [
             Effect::SendBtw {
@@ -11,8 +22,12 @@ fn send_minimal_btw(app: &mut AppView, question: &str) -> uuid::Uuid {
                 ..
             },
         ] => *id,
-        other => panic!("expected correlated minimal /btw effect, got {other:?}"),
+        other => panic!("expected correlated /btw effect, got {other:?}"),
     }
+}
+
+fn send_minimal_btw(app: &mut AppView, question: &str) -> uuid::Uuid {
+    send_btw(app, question)
 }
 
 fn esc() -> crossterm::event::Event {
@@ -234,6 +249,10 @@ fn minimal_btw_response_after_esc_is_ignored() {
     );
 
     assert!(app.agents[&id].btw_state.is_none());
+    assert!(
+        btw_blocks(&app.agents[&id]).is_empty(),
+        "Esc while loading must drop the unanswered call-site pin"
+    );
 }
 
 #[test]
@@ -265,6 +284,218 @@ fn minimal_done_dismisses_to_exactly_one_btw_block() {
     assert_eq!(btw_blocks.len(), 1);
     assert_eq!(btw_blocks[0].question, "original question");
     assert_eq!(btw_blocks[0].content().text(), "original answer");
+}
+
+#[test]
+fn fullscreen_btw_pins_at_send_not_dismiss() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().active_pane = crate::app::agent_view::AgentPane::Prompt;
+
+    let request_id = send_btw(&mut app, "side question");
+    assert_eq!(
+        btw_blocks(&app.agents[&id]),
+        vec![("side question".into(), String::new())],
+        "the /btw line must appear at send, before Esc"
+    );
+
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .scrollback
+        .push_block(RenderBlock::user_prompt("a later prompt"));
+
+    dispatch(
+        Action::TaskComplete(TaskResult::BtwResponse {
+            agent_id: id,
+            result: Ok("the answer".into()),
+            minimal_request_id: Some(request_id),
+        }),
+        &mut app,
+    );
+    let _ = app.handle_input(&esc());
+
+    let agent = &app.agents[&id];
+    assert!(agent.btw_state.is_none());
+    let entries: Vec<_> = agent
+        .scrollback
+        .iter_entries()
+        .map(|(_, entry)| match &entry.block {
+            RenderBlock::Btw(block) => format!("btw:{}:{}", block.question, block.content().text()),
+            other if other.is_user_prompt() => "prompt".into(),
+            other => format!("other:{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        entries,
+        vec![
+            "btw:side question:the answer".to_string(),
+            "prompt".to_string()
+        ],
+        "/btw must stay at the call site, not after later prompts or Esc"
+    );
+}
+
+#[test]
+fn minimal_btw_pins_at_send_not_dismiss() {
+    let mut app = test_app_with_agent();
+    app.screen_mode = crate::app::ScreenMode::Minimal;
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().active_pane = crate::app::agent_view::AgentPane::Prompt;
+    let request_id = send_minimal_btw(&mut app, "side question");
+
+    assert_eq!(
+        btw_blocks(&app.agents[&id]),
+        vec![("side question".into(), String::new())]
+    );
+
+    app.agents
+        .get_mut(&id)
+        .unwrap()
+        .scrollback
+        .push_block(RenderBlock::user_prompt("a later prompt"));
+
+    dispatch(
+        Action::TaskComplete(TaskResult::BtwResponse {
+            agent_id: id,
+            result: Ok("the answer".into()),
+            minimal_request_id: Some(request_id),
+        }),
+        &mut app,
+    );
+    let _ = app.handle_input(&esc());
+
+    let entries: Vec<_> = app.agents[&id]
+        .scrollback
+        .iter_entries()
+        .map(|(_, entry)| match &entry.block {
+            RenderBlock::Btw(block) => format!("btw:{}:{}", block.question, block.content().text()),
+            other if other.is_user_prompt() => "prompt".into(),
+            other => format!("other:{other:?}"),
+        })
+        .collect();
+    assert_eq!(
+        entries,
+        vec![
+            "btw:side question:the answer".to_string(),
+            "prompt".to_string()
+        ]
+    );
+}
+
+#[test]
+fn fullscreen_btw_cancel_while_loading_drops_pin() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    app.agents.get_mut(&id).unwrap().active_pane = crate::app::agent_view::AgentPane::Prompt;
+    dispatch(Action::SendBtw("side question".into()), &mut app);
+    assert_eq!(btw_blocks(&app.agents[&id]).len(), 1);
+
+    let _ = app.handle_input(&esc());
+    assert!(app.agents[&id].btw_state.is_none());
+    assert!(
+        btw_blocks(&app.agents[&id]).is_empty(),
+        "cancel before an answer must not leave an empty /btw"
+    );
+}
+
+#[test]
+fn fullscreen_btw_error_drops_pin() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let request_id = send_btw(&mut app, "side question");
+    dispatch(
+        Action::TaskComplete(TaskResult::BtwResponse {
+            agent_id: id,
+            result: Err("boom".into()),
+            minimal_request_id: Some(request_id),
+        }),
+        &mut app,
+    );
+    assert!(
+        btw_blocks(&app.agents[&id]).is_empty(),
+        "a failed /btw must not persist an empty pin"
+    );
+}
+
+#[test]
+fn second_btw_supersedes_unanswered_pin() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let first = send_btw(&mut app, "first");
+    let second = send_btw(&mut app, "second");
+    assert_eq!(
+        btw_blocks(&app.agents[&id]),
+        vec![("second".into(), String::new())],
+        "a replacement question replaces the unanswered pin"
+    );
+
+    dispatch(
+        Action::TaskComplete(TaskResult::BtwResponse {
+            agent_id: id,
+            result: Ok("stale first".into()),
+            minimal_request_id: Some(first),
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        btw_blocks(&app.agents[&id]),
+        vec![("second".into(), String::new())],
+        "stale success must not fill the superseding pin"
+    );
+    assert!(matches!(
+        app.agents[&id].btw_state,
+        Some(crate::views::btw_overlay::BtwOverlayState::Loading { ref question })
+            if question == "second"
+    ));
+
+    dispatch(
+        Action::TaskComplete(TaskResult::BtwResponse {
+            agent_id: id,
+            result: Ok("current".into()),
+            minimal_request_id: Some(second),
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        btw_blocks(&app.agents[&id]),
+        vec![("second".into(), "current".into())]
+    );
+}
+
+#[test]
+fn stale_fullscreen_btw_error_does_not_drop_superseding_pin() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let first = send_btw(&mut app, "first");
+    let second = send_btw(&mut app, "second");
+
+    dispatch(
+        Action::TaskComplete(TaskResult::BtwResponse {
+            agent_id: id,
+            result: Err("boom".into()),
+            minimal_request_id: Some(first),
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        btw_blocks(&app.agents[&id]),
+        vec![("second".into(), String::new())],
+        "stale error must not drop the current pin"
+    );
+
+    dispatch(
+        Action::TaskComplete(TaskResult::BtwResponse {
+            agent_id: id,
+            result: Ok("current".into()),
+            minimal_request_id: Some(second),
+        }),
+        &mut app,
+    );
+    assert_eq!(
+        btw_blocks(&app.agents[&id]),
+        vec![("second".into(), "current".into())]
+    );
 }
 
 #[test]
@@ -368,33 +599,55 @@ fn minimal_btw_requests_stay_independent_across_two_agents() {
 }
 
 #[test]
-fn fullscreen_btw_response_after_dismiss_keeps_existing_behavior() {
+fn fullscreen_btw_response_after_dismiss_is_ignored() {
     let mut app = test_app_with_agent();
     let id = AgentId(0);
-    let effects = dispatch(Action::SendBtw("side question".into()), &mut app);
-    assert!(matches!(
-        effects.as_slice(),
-        [Effect::SendBtw {
-            minimal_request_id: None,
-            ..
-        }]
-    ));
-    app.agents.get_mut(&id).unwrap().btw_state = None;
+    app.agents.get_mut(&id).unwrap().active_pane = crate::app::agent_view::AgentPane::Prompt;
+    let request_id = send_btw(&mut app, "side question");
+    let _ = app.handle_input(&esc());
+    assert!(app.agents[&id].btw_state.is_none());
+    assert!(btw_blocks(&app.agents[&id]).is_empty());
 
     dispatch(
         Action::TaskComplete(TaskResult::BtwResponse {
             agent_id: id,
             result: Ok("late".into()),
-            minimal_request_id: None,
+            minimal_request_id: Some(request_id),
         }),
         &mut app,
     );
 
-    assert!(matches!(
-        app.agents[&id].btw_state,
-        Some(crate::views::btw_overlay::BtwOverlayState::Done { ref question, .. })
-            if question.is_empty()
-    ));
+    assert!(app.agents[&id].btw_state.is_none());
+    assert!(
+        btw_blocks(&app.agents[&id]).is_empty(),
+        "a late answer after cancel must not re-pin at the end"
+    );
+}
+
+#[test]
+fn fullscreen_btw_unbind_drops_unanswered_pin_and_ignores_late_response() {
+    let mut app = test_app_with_agent();
+    let id = AgentId(0);
+    let request_id = send_btw(&mut app, "side question");
+    assert_eq!(btw_blocks(&app.agents[&id]).len(), 1);
+
+    app.agents.get_mut(&id).unwrap().unbind_session_id();
+    assert!(app.agents[&id].btw_state.is_none());
+    assert!(
+        btw_blocks(&app.agents[&id]).is_empty(),
+        "fullscreen unbind must drop the unanswered pin"
+    );
+
+    dispatch(
+        Action::TaskComplete(TaskResult::BtwResponse {
+            agent_id: id,
+            result: Ok("late".into()),
+            minimal_request_id: Some(request_id),
+        }),
+        &mut app,
+    );
+    assert!(app.agents[&id].btw_state.is_none());
+    assert!(btw_blocks(&app.agents[&id]).is_empty());
 }
 
 #[test]

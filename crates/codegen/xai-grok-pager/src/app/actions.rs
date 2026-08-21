@@ -1985,7 +1985,7 @@ pub enum Effect {
         agent_id: AgentId,
         session_id: acp::SessionId,
         question: String,
-        /// Correlates minimal responses; fullscreen leaves this unset.
+        /// Correlates the unanswered `/btw` pin in every mode.
         minimal_request_id: Option<uuid::Uuid>,
     },
     /// Request a session recap via the x.ai/recap ext method. Fire-and-forget:
@@ -2838,7 +2838,7 @@ pub enum TaskResult {
     BtwResponse {
         agent_id: AgentId,
         result: Result<String, String>,
-        /// Correlates minimal responses; fullscreen leaves this unset.
+        /// Correlates the unanswered `/btw` pin in every mode.
         minimal_request_id: Option<uuid::Uuid>,
     },
     /// `x.ai/recap` request acknowledged (fire-and-forget). The recap itself

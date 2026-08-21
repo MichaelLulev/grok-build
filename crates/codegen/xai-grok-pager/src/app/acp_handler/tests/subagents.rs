@@ -1243,7 +1243,7 @@
             ..crate::acp::meta::NotificationMeta::default()
         };
         assert!(
-            !drop_unexpected_replay(agent, &meta, "sess-late", "test"),
+            !drop_unexpected_replay(agent, &meta, "sess-late", "test", true),
             "isReplay during late grace must apply"
         );
     }
@@ -1254,13 +1254,19 @@
         let agent = app.agents.get_mut(&AgentId(0)).unwrap();
         agent.arm_late_replay_grace();
         let live = crate::acp::meta::NotificationMeta::default();
-        assert!(!drop_unexpected_replay(agent, &live, "sess-late", "test"));
+        assert!(!drop_unexpected_replay(
+            agent,
+            &live,
+            "sess-late",
+            "test",
+            true
+        ));
         let replay = crate::acp::meta::NotificationMeta {
             is_replay: true,
             ..crate::acp::meta::NotificationMeta::default()
         };
         assert!(
-            drop_unexpected_replay(agent, &replay, "sess-late", "test"),
+            drop_unexpected_replay(agent, &replay, "sess-late", "test", true),
             "this-session live must close late grace"
         );
     }

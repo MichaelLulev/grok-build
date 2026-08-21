@@ -2,9 +2,9 @@
 //!
 //! Renders as a compact bordered panel above the prompt input box,
 //! below the scrollback. Shows the question and a loading indicator
-//! while the response is in-flight. Once the response arrives the
-//! panel stays on screen until the user presses Esc, at which point
-//! the content is persisted to scrollback as a collapsed `BtwBlock`.
+//! while the response is in-flight. The collapsed `/btw` transcript
+//! pin is placed at send (the call site) and filled when the answer
+//! arrives; Esc only dismisses this panel.
 
 use crate::render::SafeBuf;
 use ratatui::buffer::Buffer;

@@ -1557,6 +1557,14 @@ pub struct AgentView {
     /// summary and stops the animation. `None` when no manual recap is
     /// pending (auto recaps never show a loading block).
     pub(crate) pending_recap_entry: Option<EntryId>,
+    /// Entry ID of the `/btw` scrollback pin pushed at send (the call site).
+    /// Filled in place when the answer arrives; removed if the request is
+    /// cancelled, errors, or is superseded. `None` when no unanswered `/btw`
+    /// pin is waiting.
+    pub(crate) pending_btw_entry: Option<EntryId>,
+    /// Request id of the unanswered `/btw` pin. Fullscreen and minimal both
+    /// stamp this so a stale in-flight response cannot fill or drop a later pin.
+    pub(crate) pending_btw_request: Option<uuid::Uuid>,
     /// The manually-chosen session title (`/rename` or the dashboard
     /// rename flow), as distinct from the auto-generated
     /// `generated_session_title` below. Set optimistically at dispatch,

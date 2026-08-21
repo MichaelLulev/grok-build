@@ -346,20 +346,58 @@ impl AgentView {
         self.casual_editing_comment_id = None;
     }
 
-    /// Dismiss the /btw panel. If Done, flush response to scrollback first.
-    pub(super) fn dismiss_btw_panel(&mut self) -> InputOutcome {
-        use crate::scrollback::block::RenderBlock;
-        use crate::scrollback::blocks::BtwBlock;
-        use crate::views::btw_overlay::BtwOverlayState;
-        if let Some(BtwOverlayState::Done {
-            question, content, ..
-        }) = self.btw_state.take()
-        {
-            self.scrollback
-                .push_block(RenderBlock::Btw(BtwBlock::new(question, content.text())));
+    /// Pin a collapsed `/btw` block at the current end of scrollback (the
+    /// call site). A still-unanswered previous pin is dropped so a replacement
+    /// question does not leave an empty `/btw` behind.
+    pub(crate) fn pin_btw_at_call_site(&mut self, question: &str) -> uuid::Uuid {
+        self.drop_unanswered_btw_pin();
+        let id = self
+            .scrollback
+            .push_block(crate::scrollback::block::RenderBlock::Btw(
+                crate::scrollback::blocks::BtwBlock::new(question, ""),
+            ));
+        let request_id = uuid::Uuid::new_v4();
+        self.pending_btw_entry = Some(id);
+        self.pending_btw_request = Some(request_id);
+        request_id
+    }
+
+    /// Fill the call-site pin with the answer. No-op if the pin was already
+    /// cancelled or superseded.
+    pub(crate) fn fill_pending_btw(&mut self, response: &str) {
+        self.pending_btw_request = None;
+        let Some(id) = self.pending_btw_entry.take() else {
+            return;
+        };
+        let filled = if let Some(entry) = self.scrollback.get_by_id_mut(id) {
+            if let crate::scrollback::block::RenderBlock::Btw(block) = &mut entry.block {
+                block.set_response(response);
+                entry.invalidate_cache();
+                true
+            } else {
+                false
+            }
         } else {
-            self.btw_state = None;
+            false
+        };
+        if filled {
+            self.scrollback.mark_structurally_dirty(id);
         }
+    }
+
+    /// Remove an unanswered `/btw` pin (cancel, error, supersede, session
+    /// boundary). Filled pins are not pending and are left in place.
+    pub(crate) fn drop_unanswered_btw_pin(&mut self) {
+        self.pending_btw_request = None;
+        if let Some(id) = self.pending_btw_entry.take() {
+            self.scrollback.remove_entry(id);
+        }
+    }
+
+    /// Close the overlay. An unanswered pin is cancel; a filled pin stays in scrollback.
+    pub(super) fn dismiss_btw_panel(&mut self) -> InputOutcome {
+        self.drop_unanswered_btw_pin();
+        self.btw_state = None;
         self.minimal_btw_lifecycle = None;
         self.btw_focused = false;
         self.clear_btw_drag_state();

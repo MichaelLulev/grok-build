@@ -2183,6 +2183,7 @@ mod session_routing;
 mod plugins;
 mod subagents;
 mod goals;
+mod btw;
 mod interactions;
 mod background_tasks;
 mod models;

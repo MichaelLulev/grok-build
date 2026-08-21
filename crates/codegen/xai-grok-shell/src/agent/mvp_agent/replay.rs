@@ -8,7 +8,64 @@ use agent_client_protocol as acp;
 use xai_grok_paths::AbsPathBuf;
 
 use super::{MvpAgent, mark_as_replay, stamp_meta_value};
-use crate::session::storage::ReplayToolCollapser;
+use crate::session::persistence::BtwEntry;
+use crate::session::storage::{
+    ReplayToolCollapser, jsonl_envelope_timestamp_secs, rewind_discarded_time_windows,
+};
+
+/// Successful `/btw` entries from `btw_history.jsonl` next to `updates.jsonl`.
+fn load_successful_btw_entries(updates_path: &std::path::Path) -> Vec<BtwEntry> {
+    let Some(dir) = updates_path.parent() else {
+        return Vec::new();
+    };
+    load_successful_btw_from_str(
+        &std::fs::read_to_string(dir.join("btw_history.jsonl")).unwrap_or_default(),
+    )
+}
+
+fn load_successful_btw_from_str(contents: &str) -> Vec<BtwEntry> {
+    let mut entries: Vec<BtwEntry> = contents
+        .lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            if line.is_empty() {
+                return None;
+            }
+            serde_json::from_str::<BtwEntry>(line).ok()
+        })
+        .filter(|e| e.success && !e.question.trim().is_empty() && !e.answer.trim().is_empty())
+        .collect();
+    entries.sort_by_key(|e| e.asked_at);
+    entries
+}
+
+fn filter_btw_surviving_rewinds(mut entries: Vec<BtwEntry>, raw: &str) -> Vec<BtwEntry> {
+    let lines: Vec<&str> = raw.lines().filter(|l| !l.trim().is_empty()).collect();
+    let windows = rewind_discarded_time_windows(&lines);
+    if windows.is_empty() {
+        return entries;
+    }
+    entries.retain(|e| {
+        let t = e.asked_at.timestamp();
+        !windows.iter().any(|&(start, end)| t >= start && t <= end)
+    });
+    entries
+}
+
+fn load_btw_entries_for_replay(updates_path: &std::path::Path, raw: &str) -> Vec<BtwEntry> {
+    filter_btw_surviving_rewinds(load_successful_btw_entries(updates_path), raw)
+}
+
+/// Whether a `/btw` asked at `asked_at` should be injected before this
+/// `updates.jsonl` line (or at end-of-replay flush). Using ask time — not
+/// dismiss time — keeps resume order matching the live call site.
+fn btw_due_for_line(
+    asked_at: chrono::DateTime<chrono::Utc>,
+    line_ts: Option<i64>,
+    flush_rest: bool,
+) -> bool {
+    flush_rest || line_ts.is_some_and(|ts| asked_at.timestamp() <= ts)
+}
 
 /// Max in-flight `forward_with_completion` receivers during cold resume.
 /// Unbounded enqueue + sync pager apply peaks the pager at multi-GB on huge
@@ -193,6 +250,67 @@ impl MvpAgent {
         Some(self.gateway.forward_with_completion(notification))
     }
 
+    fn forward_replay_btw(
+        &self,
+        session_id: &acp::SessionId,
+        entry: &BtwEntry,
+        persist_data: Option<&serde_json::Value>,
+        target_client_id: Option<&serde_json::Value>,
+    ) -> Option<ReplayCompletionRx> {
+        let mut meta = serde_json::Map::new();
+        meta.insert("isReplay".into(), serde_json::json!(true));
+        if let Some(pd) = persist_data {
+            meta.insert("x.ai/persist".into(), pd.clone());
+        }
+        if let Some(tid) = target_client_id {
+            meta.insert("x.ai/leaderClientId".into(), tid.clone());
+        }
+        let notification = crate::extensions::notification::SessionNotification {
+            session_id: session_id.clone(),
+            update: crate::extensions::notification::SessionUpdate::Btw {
+                question: entry.question.clone(),
+                answer: entry.answer.clone(),
+                asked_at: entry.asked_at.to_rfc3339(),
+            },
+            meta: Some(serde_json::Value::Object(meta)),
+        };
+        let params = serde_json::value::to_raw_value(&notification).ok()?;
+        Some(
+            self.gateway
+                .forward_with_completion(acp::ExtNotification::new(
+                    "x.ai/session/update",
+                    std::sync::Arc::from(params),
+                )),
+        )
+    }
+
+    async fn emit_btw_due(
+        &self,
+        session_id: &acp::SessionId,
+        pending: &mut std::iter::Peekable<std::vec::IntoIter<BtwEntry>>,
+        line_ts: Option<i64>,
+        persist_data: Option<&serde_json::Value>,
+        target_client_id: Option<&serde_json::Value>,
+        drain: &mut ReplayCompletionDrain,
+        flush_rest: bool,
+    ) {
+        loop {
+            let Some(next) = pending.peek() else {
+                return;
+            };
+            let due = btw_due_for_line(next.asked_at, line_ts, flush_rest);
+            if !due {
+                return;
+            }
+            let entry = pending.next().expect("peeked");
+            if let Some(rx) =
+                self.forward_replay_btw(session_id, &entry, persist_data, target_client_id)
+            {
+                drain.push(rx).await;
+            }
+        }
+    }
+
     /// Replay updates from disk and drain completions.
     /// Returns `(initial_total_tokens, end_offset, unfinished_subagents)`.
     pub(super) async fn replay_session_updates(
@@ -220,7 +338,26 @@ impl MvpAgent {
         // Inline blocking I/O: spawn_blocking has multi-second latency on LocalSet.
         let raw_contents = match std::fs::read_to_string(updates_path) {
             Ok(s) if !s.is_empty() => s,
-            _ => return Ok((0, 0, Vec::new())),
+            _ => {
+                if cursor.is_none() {
+                    let mut drain = ReplayCompletionDrain::new();
+                    let mut pending = load_successful_btw_entries(updates_path)
+                        .into_iter()
+                        .peekable();
+                    self.emit_btw_due(
+                        session_id,
+                        &mut pending,
+                        None,
+                        persist_data,
+                        target_client_id,
+                        &mut drain,
+                        true,
+                    )
+                    .await;
+                    drain.drain_all().await;
+                }
+                return Ok((0, 0, Vec::new()));
+            }
         };
         let end_offset = raw_contents.len() as u64;
 
@@ -257,11 +394,28 @@ impl MvpAgent {
         let lines_to_send = prepared.lines;
         let updates_count = lines_to_send.len() as u64;
         let mut drain = ReplayCompletionDrain::new();
+        let mut btw_pending = if mark_replay {
+            load_btw_entries_for_replay(updates_path, &raw_contents)
+                .into_iter()
+                .peekable()
+        } else {
+            Vec::new().into_iter().peekable()
+        };
 
         {
             let _timer = crate::instrumentation_timer!("session.replay.forward_updates");
             let mut collapser = ReplayToolCollapser::new();
             for line in &lines_to_send {
+                self.emit_btw_due(
+                    session_id,
+                    &mut btw_pending,
+                    jsonl_envelope_timestamp_secs(line),
+                    persist_data,
+                    target_client_id,
+                    &mut drain,
+                    false,
+                )
+                .await;
                 if let Some(rx) = self.forward_raw_replay_line(
                     line,
                     persist_data,
@@ -272,6 +426,16 @@ impl MvpAgent {
                     drain.push(rx).await;
                 }
             }
+            self.emit_btw_due(
+                session_id,
+                &mut btw_pending,
+                None,
+                persist_data,
+                target_client_id,
+                &mut drain,
+                true,
+            )
+            .await;
             // Do not flush collapser leftovers: synthesizing a ToolCall here
             // would drop the persisted `_meta.eventId` and duplicate on
             // incremental reconnect. Child stream EOF flush is separate.
@@ -451,5 +615,121 @@ mod drain_tests {
         tx0.send(Ok(())).unwrap();
         tx1.send(Ok(())).unwrap();
         drain_all.await;
+    }
+}
+
+#[cfg(test)]
+mod btw_replay_tests {
+    use super::{
+        btw_due_for_line, filter_btw_surviving_rewinds, load_successful_btw_from_str,
+    };
+    use crate::session::storage::jsonl_envelope_timestamp_secs;
+    use crate::session::persistence::BtwEntry;
+    use chrono::{TimeZone, Utc};
+
+    fn line(q: &str, a: &str, success: bool, asked: i64) -> String {
+        serde_json::to_string(&BtwEntry {
+            btw_session_id: "btw-1".into(),
+            parent_session_id: "s".into(),
+            asked_at: Utc.timestamp_opt(asked, 0).single().unwrap(),
+            question: q.into(),
+            answer: a.into(),
+            model: "grok".into(),
+            success,
+            error: None,
+            attempts: 1,
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn load_skips_failed_and_empty() {
+        let jsonl = [
+            line("ok q", "ok a", true, 10),
+            line("fail q", "", true, 11),
+            line("err q", "nope", false, 12),
+            line("", "ans", true, 13),
+            line("later", "yes", true, 14),
+        ]
+        .join("\n");
+        let got = load_successful_btw_from_str(&jsonl);
+        let qs: Vec<_> = got.iter().map(|e| e.question.as_str()).collect();
+        assert_eq!(qs, ["ok q", "later"]);
+    }
+
+    #[test]
+    fn load_sorts_by_asked_at() {
+        let jsonl = [line("b", "2", true, 20), line("a", "1", true, 10)].join("\n");
+        let got = load_successful_btw_from_str(&jsonl);
+        assert_eq!(got[0].question, "a");
+        assert_eq!(got[1].question, "b");
+    }
+
+    #[test]
+    fn btw_due_at_or_before_line_timestamp_not_dismiss_time() {
+        let asked = Utc.timestamp_opt(15, 0).single().unwrap();
+        assert!(
+            !btw_due_for_line(asked, Some(10), false),
+            "a later ask must wait for a later conversation event"
+        );
+        assert!(
+            btw_due_for_line(asked, Some(15), false),
+            "inject at the first event at or after the ask"
+        );
+        assert!(btw_due_for_line(asked, Some(20), false));
+        assert!(
+            !btw_due_for_line(asked, None, false),
+            "unknown line time must not emit early"
+        );
+        assert!(btw_due_for_line(asked, None, true));
+    }
+
+    #[test]
+    fn timestamp_peek_seconds_millis_rfc3339() {
+        assert_eq!(
+            jsonl_envelope_timestamp_secs(
+                r#"{"timestamp":1787218575,"method":"session/update","params":{}}"#
+            ),
+            Some(1787218575)
+        );
+        assert_eq!(
+            jsonl_envelope_timestamp_secs(
+                r#"{"timestamp":1787218575000,"method":"session/update","params":{}}"#
+            ),
+            Some(1787218575)
+        );
+        let rfc = "2026-08-20T12:00:00Z";
+        let expected = chrono::DateTime::parse_from_rfc3339(rfc)
+            .unwrap()
+            .timestamp();
+        assert_eq!(
+            jsonl_envelope_timestamp_secs(&format!(
+                r#"{{"timestamp":"{rfc}","method":"session/update","params":{{}}}}"#
+            )),
+            Some(expected)
+        );
+    }
+
+    #[test]
+    fn rewind_dead_branch_btw_is_not_restored() {
+        let raw = [
+            r#"{"timestamp":10,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"first"}}}}"#,
+            r#"{"timestamp":11,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"r1"}}}}"#,
+            r#"{"timestamp":20,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"second"}}}}"#,
+            r#"{"timestamp":21,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"agent_message_chunk","content":{"type":"text","text":"r2"}}}}"#,
+            r#"{"timestamp":25,"method":"_x.ai/session/update","params":{"sessionId":"s","update":{"sessionUpdate":"rewind_marker","target_prompt_index":1,"created_at":"2024-01-01"}}}"#,
+            r#"{"timestamp":30,"method":"session/update","params":{"sessionId":"s","update":{"sessionUpdate":"user_message_chunk","content":{"type":"text","text":"replacement"}}}}"#,
+        ]
+        .join("\n");
+        let jsonl = [
+            line("kept", "a", true, 11),
+            line("dead", "b", true, 21),
+            line("after", "c", true, 30),
+        ]
+        .join("\n");
+        let entries = load_successful_btw_from_str(&jsonl);
+        let got = filter_btw_surviving_rewinds(entries, &raw);
+        let qs: Vec<_> = got.iter().map(|e| e.question.as_str()).collect();
+        assert_eq!(qs, ["kept", "after"]);
     }
 }

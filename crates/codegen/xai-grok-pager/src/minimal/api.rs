@@ -414,7 +414,7 @@ pub fn minimal_btw_surface_available(v: &AgentView) -> bool {
 
 /// Start a correlated minimal `/btw` loading panel on this agent.
 pub fn start_minimal_btw(v: &mut AgentView, question: String) -> uuid::Uuid {
-    let request_id = uuid::Uuid::new_v4();
+    let request_id = v.pin_btw_at_call_site(&question);
     v.minimal_btw_lifecycle = Some(MinimalBtwLifecycle::Active {
         request_id: Some(request_id),
         revision: uuid::Uuid::new_v4(),
@@ -450,12 +450,14 @@ pub fn finish_minimal_btw(
     });
     match result {
         Ok(response) => {
+            v.fill_pending_btw(&response);
             v.btw_state = Some(crate::views::btw_overlay::BtwOverlayState::done(
                 question, response,
             ));
             v.btw_focused = true;
         }
         Err(error) => {
+            v.drop_unanswered_btw_pin();
             v.btw_state =
                 Some(crate::views::btw_overlay::BtwOverlayState::Error { question, error });
             v.btw_focused = false;
@@ -464,11 +466,11 @@ pub fn finish_minimal_btw(
     true
 }
 
-/// Invalidate and clear the complete minimal `/btw` lifecycle.
+/// Invalidate and clear the complete `/btw` overlay lifecycle (minimal or
+/// fullscreen). Always drops an unanswered pin so session-boundary callers
+/// that only have a fullscreen pin still clear it.
 pub fn clear_minimal_btw(v: &mut AgentView) {
-    if v.minimal_btw_lifecycle.is_none() {
-        return;
-    }
+    v.drop_unanswered_btw_pin();
     v.minimal_btw_lifecycle = None;
     v.btw_state = None;
     v.btw_focused = false;

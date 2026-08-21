@@ -333,7 +333,7 @@ Report an issue or send feedback. A message sends immediately. With none, a pane
 
 ### `/btw`
 
-Send an aside to the agent without interrupting the current task. In minimal mode (`--minimal`), the answer shows up in a dismissible panel above the prompt: `Esc` dismisses it, a finished answer is saved into native scrollback, and a late reply to an already-dismissed panel is dropped. The side question and its answer aren't part of the main turn.
+Send an aside to the agent without interrupting the current task. The `/btw` line is pinned in the transcript where you sent it (not where you later dismiss the panel). `Esc` closes the panel. A late reply after Esc is dropped. Resumed sessions restore `/btw` entries at the time they were asked. The side question and its answer aren't part of the main turn.
 
 ```
 /btw also check the error handling

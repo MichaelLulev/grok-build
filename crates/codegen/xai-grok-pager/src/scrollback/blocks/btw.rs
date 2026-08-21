@@ -32,6 +32,12 @@ impl BtwBlock {
         }
     }
 
+    /// Replace the response markdown (call-site pin is filled when the
+    /// answer arrives, without moving the block).
+    pub fn set_response(&mut self, response: impl Into<String>) {
+        self.content = MarkdownContent::new(response);
+    }
+
     /// Access the underlying markdown content.
     pub fn content(&self) -> &MarkdownContent {
         &self.content
@@ -99,5 +105,19 @@ impl BlockContent for BtwBlock {
 
     fn default_display_mode(&self) -> DisplayMode {
         DisplayMode::Collapsed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::BtwBlock;
+
+    #[test]
+    fn set_response_replaces_markdown_in_place() {
+        let mut block = BtwBlock::new("q", "");
+        assert!(block.content().is_empty());
+        block.set_response("hello **world**");
+        assert_eq!(block.question, "q");
+        assert_eq!(block.content().text(), "hello **world**");
     }
 }

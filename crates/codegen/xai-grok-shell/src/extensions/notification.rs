@@ -611,6 +611,14 @@ pub enum SessionUpdate {
     /// forever; on receipt the pager clears it. Never emitted for an automatic
     /// recap (those show no spinner).
     SessionRecapUnavailable,
+    /// `/btw` Q&A restored on session load from `btw_history.jsonl`.
+    /// Not written to `updates.jsonl`; the pager paints a collapsed `Btw` block.
+    Btw {
+        question: String,
+        answer: String,
+        /// RFC3339 time the question was asked (`BtwEntry.asked_at`).
+        asked_at: String,
+    },
     /// Ultra-short summary of the just-finished successful turn, generated at
     /// turn end for the dashboard row's secondary line. Rows show it until
     /// the next successful turn's summary replaces it.
@@ -2163,6 +2171,29 @@ mod tests {
                 assert_eq!(planning, None);
             }
             other => panic!("expected GoalUpdated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn btw_payload_round_trips() {
+        let json = r#"{
+            "sessionUpdate": "btw",
+            "question": "what is rust",
+            "answer": "a **systems** language",
+            "asked_at": "2026-08-20T12:00:00+00:00"
+        }"#;
+        let update: SessionUpdate = serde_json::from_str(json).unwrap();
+        match update {
+            SessionUpdate::Btw {
+                question,
+                answer,
+                asked_at,
+            } => {
+                assert_eq!(question, "what is rust");
+                assert_eq!(answer, "a **systems** language");
+                assert_eq!(asked_at, "2026-08-20T12:00:00+00:00");
+            }
+            other => panic!("expected Btw, got {other:?}"),
         }
     }
 
