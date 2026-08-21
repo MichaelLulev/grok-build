@@ -1565,6 +1565,10 @@ impl AcpUpdateTracker {
                 crate::scrollback::blocks::UserPromptBlock::new(cmd)
             } else if let Some(prompt) = extract_cron_prompt_body(&text) {
                 crate::scrollback::blocks::UserPromptBlock::cron(prompt)
+            } else if !user_message_hidden_by_origin(&chunk, meta)
+                && let Some(cmd) = extract_goal_scrollback_command(&text)
+            {
+                crate::scrollback::blocks::UserPromptBlock::skill(cmd)
             } else if user_message_hidden_from_scrollback(&chunk, meta, &text) {
                 return false;
             } else {
@@ -1638,6 +1642,41 @@ fn extract_skill_header_command(text: &str) -> Option<String> {
     }
     Some(cmd_name.to_string())
 }
+/// Type-driven hide: chunk meta or prompt origin. Text-shape fallbacks live
+/// in [`user_message_hidden_from_scrollback`].
+fn user_message_hidden_by_origin(chunk: &acp::ContentChunk, meta: &NotificationMeta) -> bool {
+    if chunk
+        .meta
+        .as_ref()
+        .and_then(|m| m.get(user_message_chunk_meta::HIDE_FROM_SCROLLBACK))
+        .and_then(|v| v.as_bool())
+        == Some(true)
+    {
+        return true;
+    }
+    meta.prompt_id.as_deref().is_some_and(|pid| {
+        xai_grok_shell::session::PromptOrigin::from_prompt_id(pid).hide_user_echo_from_scrollback()
+    })
+}
+
+/// Reconstruct the typed `/goal` line from a pre-`displayText` reminder
+/// (`setup_goal` / `resume_goal`) so `/resume` still shows the first message.
+fn extract_goal_scrollback_command(text: &str) -> Option<String> {
+    let t = text.trim_start();
+    if !t.starts_with("<system-reminder>") || !t.contains("A goal has been set:") {
+        return None;
+    }
+    if t.contains("\nContinue working now.\n</system-reminder>") {
+        return Some("/goal resume".to_string());
+    }
+    let after = t.split_once("A goal has been set:")?.1;
+    let objective = after.lines().next()?.trim();
+    if objective.is_empty() {
+        return None;
+    }
+    Some(format!("/goal {objective}"))
+}
+
 /// Whether a `UserMessageChunk` must stay out of scrollback.
 ///
 /// Type-driven (preferred):
@@ -1648,25 +1687,14 @@ fn extract_skill_header_command(text: &str) -> Option<String> {
 ///
 /// Legacy fallback (pre-meta sessions only): bare auto-wake text that used to
 /// be gated by the system-reminder prefix. Cron is handled earlier by
-/// [`extract_cron_prompt_body`].
+/// [`extract_cron_prompt_body`]. Goal setup/resume reminders are reconstructed
+/// earlier by [`extract_goal_scrollback_command`].
 fn user_message_hidden_from_scrollback(
     chunk: &acp::ContentChunk,
     meta: &NotificationMeta,
     text: &str,
 ) -> bool {
-    if chunk
-        .meta
-        .as_ref()
-        .and_then(|m| m.get(user_message_chunk_meta::HIDE_FROM_SCROLLBACK))
-        .and_then(|v| v.as_bool())
-        == Some(true)
-    {
-        return true;
-    }
-    if let Some(pid) = meta.prompt_id.as_deref()
-        && xai_grok_shell::session::PromptOrigin::from_prompt_id(pid)
-            .hide_user_echo_from_scrollback()
-    {
+    if user_message_hidden_by_origin(chunk, meta) {
         return true;
     }
     let t = text.trim_start();

@@ -4181,6 +4181,166 @@ fn replay_hides_user_echo_by_origin_type() {
     );
     assert_eq!(sb.len(), 3);
 }
+
+fn goal_setup_reminder(objective: &str) -> String {
+    format!(
+        "<system-reminder>\nA goal has been set: {objective}\n\nYou are working directly \
+         on this goal across multiple turns.\nStart now.\n</system-reminder>\n\n"
+    )
+}
+
+fn goal_resume_reminder(objective: &str) -> String {
+    format!(
+        "<system-reminder>\nA goal has been set: {objective}\n\nContinue working now.\n\
+         </system-reminder>"
+    )
+}
+
+/// Pre-displayText `/goal` setup reminders reconstruct the typed command on
+/// resume instead of disappearing as a hidden system-reminder.
+#[test]
+fn replay_goal_setup_reminder_shows_goal_command() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    assert!(
+        tracker.handle_update(
+            user_message(&goal_setup_reminder("Find a cheaper VPS")),
+            &meta(),
+            &mut sb,
+        ),
+        "goal setup reminder must render as /goal"
+    );
+    assert_eq!(sb.len(), 1);
+    match &sb.get(0).unwrap().block {
+        RenderBlock::UserPrompt(block) => {
+            assert_eq!(block.text, "/goal Find a cheaper VPS");
+            assert_eq!(block.skill_token_ranges, vec![0..5]);
+        }
+        other => panic!("expected UserPrompt, got {other:?}"),
+    }
+}
+
+/// `/goal resume` inference reminders reconstruct `/goal resume`, not a
+/// duplicate `/goal <objective>` line.
+#[test]
+fn replay_goal_resume_reminder_shows_goal_resume() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    assert!(tracker.handle_update(
+        user_message(&goal_resume_reminder("Find a cheaper VPS")),
+        &meta(),
+        &mut sb,
+    ));
+    match &sb.get(0).unwrap().block {
+        RenderBlock::UserPrompt(block) => {
+            assert_eq!(block.text, "/goal resume");
+            assert_eq!(block.skill_token_ranges, vec![0..5]);
+        }
+        other => panic!("expected UserPrompt, got {other:?}"),
+    }
+}
+
+/// New sessions stamp `displayText`; that wins over reminder reconstruction.
+#[test]
+fn replay_goal_reminder_prefers_display_text() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    tracker.handle_update(
+        user_message_with_display_text(
+            &goal_setup_reminder("ship it"),
+            "/goal ship it --budget 8000",
+            true,
+        ),
+        &meta(),
+        &mut sb,
+    );
+    match &sb.get(0).unwrap().block {
+        RenderBlock::UserPrompt(block) => {
+            assert_eq!(block.text, "/goal ship it --budget 8000");
+            assert_eq!(block.skill_token_ranges, vec![0..5]);
+        }
+        other => panic!("expected UserPrompt, got {other:?}"),
+    }
+}
+
+/// Synthetic goal-summary turns still stay out of scrollback even if the
+/// body looks like a setup reminder.
+#[test]
+fn replay_hides_goal_summary_origin_despite_setup_shape() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    assert!(
+        !tracker.handle_update(
+            user_message(&goal_setup_reminder("ship it")),
+            &meta_with_prompt_id("goal-summary-1"),
+            &mut sb,
+        ),
+        "goal-summary origin must stay hidden"
+    );
+    assert_eq!(sb.len(), 0);
+}
+
+/// Chunk `hideFromScrollback` must still win over setup-reminder reconstruction.
+#[test]
+fn replay_hides_goal_setup_with_hide_from_scrollback_meta() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    let mut hide_meta = acp::Meta::new();
+    hide_meta.insert("hideFromScrollback".into(), serde_json::json!(true));
+    assert!(
+        !tracker.handle_update(
+            user_message_with_chunk_meta(&goal_setup_reminder("ship it"), hide_meta),
+            &meta(),
+            &mut sb,
+        ),
+        "hideFromScrollback must suppress a goal-setup body"
+    );
+    assert_eq!(sb.len(), 0);
+}
+
+/// Live send already painted `/goal …`; the ACP echo of a displayText-stamped
+/// reminder must not add a second user block.
+#[test]
+fn expect_user_echo_drops_display_text_goal_reminder() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    sb.push_block(RenderBlock::user_prompt("/goal ship it"));
+    tracker.expect_user_echo();
+    assert!(
+        !tracker.handle_update(
+            user_message_with_display_text(
+                &goal_setup_reminder("ship it"),
+                "/goal ship it",
+                true,
+            ),
+            &meta(),
+            &mut sb,
+        ),
+        "displayText goal echo must be skipped"
+    );
+    assert_eq!(sb.len(), 1, "local /goal block is the only user entry");
+}
+
+/// A setup objective that mentions the resume closer must still reconstruct
+/// as `/goal <objective>`, not `/goal resume`.
+#[test]
+fn replay_goal_setup_objective_mentioning_continue_phrase() {
+    let mut sb = ScrollbackState::new();
+    let mut tracker = AcpUpdateTracker::new();
+    let objective = "print Continue working now. then stop";
+    assert!(tracker.handle_update(
+        user_message(&goal_setup_reminder(objective)),
+        &meta(),
+        &mut sb,
+    ));
+    match &sb.get(0).unwrap().block {
+        RenderBlock::UserPrompt(block) => {
+            assert_eq!(block.text, format!("/goal {objective}"));
+        }
+        other => panic!("expected UserPrompt, got {other:?}"),
+    }
+}
+
 /// Helper: UserMessageChunk with `skillTokenRanges` in content-block meta.
 fn user_message_with_token_ranges(text: &str, ranges: serde_json::Value) -> acp::SessionUpdate {
     let mut meta_map = acp::Meta::new();

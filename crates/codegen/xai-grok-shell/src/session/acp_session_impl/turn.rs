@@ -215,6 +215,23 @@ impl SessionActor {
         }
         user_images
     }
+    /// Model-facing goal reminder with a scrollback display of the typed
+    /// `/goal` command. Resume hides bare `<system-reminder>` user echoes, so
+    /// without `displayText` the first message disappears on `/resume`.
+    fn goal_inference_prompt_block(reminder: String, original_prompt: &str) -> acp::ContentBlock {
+        let display = original_prompt.trim();
+        let mut text = acp::TextContent::new(reminder);
+        if !display.is_empty() {
+            let mut meta = serde_json::Map::new();
+            meta.insert("displayText".into(), serde_json::json!(display));
+            if display.starts_with('/') && !display.starts_with("//") {
+                meta.insert("displayAsSkill".into(), serde_json::json!(true));
+            }
+            text = text.meta(Some(meta));
+        }
+        acp::ContentBlock::Text(text)
+    }
+
     pub(super) fn persist_host_turn_user_echo(&self, text: &str, prompt_id: &str) {
         let text = text.trim();
         if text.is_empty() {
@@ -405,8 +422,6 @@ impl SessionActor {
         let prompt_blocks = match resolved {
             Ok(blocks) => blocks,
             Err(SlashCommandOutcome::Builtin(action)) => {
-                let text_block =
-                    |text: String| acp::ContentBlock::Text(acp::TextContent::new(text));
                 let slash_used = xai_grok_telemetry::events::SlashCommandUsed {
                     command: action.command_name().to_string(),
                     args_provided: action.args_provided(),
@@ -423,14 +438,20 @@ impl SessionActor {
                     } => {
                         xai_grok_telemetry::session_ctx::log_event(slash_used);
                         let reminder = self.setup_goal(&objective, token_budget).await;
-                        vec![text_block(reminder)]
+                        vec![Self::goal_inference_prompt_block(
+                            reminder,
+                            &original_prompt_text,
+                        )]
                     }
                     BuiltinAction::GoalResume => {
                         xai_grok_telemetry::session_ctx::log_event(slash_used);
                         match self.resume_goal().await {
                             GoalResumeOutcome::Inference { reminder, user_msg } => {
                                 self.send_slash_command_output(&user_msg).await;
-                                vec![text_block(reminder)]
+                                vec![Self::goal_inference_prompt_block(
+                                    reminder,
+                                    &original_prompt_text,
+                                )]
                             }
                             GoalResumeOutcome::Message(msg) => {
                                 self.persist_host_turn_user_echo(&original_prompt_text, prompt_id);
@@ -3055,6 +3076,59 @@ mod user_echo_broadcast_tests {
             ),
             UserEchoMode::PersistOnly
         );
+    }
+}
+
+#[cfg(test)]
+mod goal_inference_prompt_block_tests {
+    use super::SessionActor;
+    use agent_client_protocol as acp;
+
+    fn display_meta(block: &acp::ContentBlock) -> (&str, Option<&str>, Option<bool>) {
+        let acp::ContentBlock::Text(t) = block else {
+            panic!("expected text block");
+        };
+        let meta = t.meta.as_ref();
+        let display = meta
+            .and_then(|m| m.get("displayText"))
+            .and_then(|v| v.as_str());
+        let as_skill = meta
+            .and_then(|m| m.get("displayAsSkill"))
+            .and_then(|v| v.as_bool());
+        (t.text.as_str(), display, as_skill)
+    }
+
+    #[test]
+    fn stamps_typed_goal_command_as_skill_display() {
+        let block = SessionActor::goal_inference_prompt_block(
+            "<system-reminder>\nA goal has been set: ship it\nStart now.\n</system-reminder>\n\n"
+                .into(),
+            "  /goal ship it --budget 8000  ",
+        );
+        let (wire, display, as_skill) = display_meta(&block);
+        assert!(wire.starts_with("<system-reminder>"));
+        assert_eq!(display, Some("/goal ship it --budget 8000"));
+        assert_eq!(as_skill, Some(true));
+    }
+
+    #[test]
+    fn stamps_goal_resume_command() {
+        let block = SessionActor::goal_inference_prompt_block(
+            "<system-reminder>\nContinue working now.\n</system-reminder>".into(),
+            "/goal resume",
+        );
+        let (_, display, as_skill) = display_meta(&block);
+        assert_eq!(display, Some("/goal resume"));
+        assert_eq!(as_skill, Some(true));
+    }
+
+    #[test]
+    fn empty_original_prompt_leaves_reminder_unstamped() {
+        let block = SessionActor::goal_inference_prompt_block("reminder".into(), "  \n");
+        let (wire, display, as_skill) = display_meta(&block);
+        assert_eq!(wire, "reminder");
+        assert_eq!(display, None);
+        assert_eq!(as_skill, None);
     }
 }
 #[cfg(test)]
